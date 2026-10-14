@@ -17,7 +17,8 @@ Server (app/server)
    ├─ env.ts            loads ~/.reelmimic/secrets.json at startup
    ├─ jobs.ts           workflow state machine + production scheduling (order, parallelism, pausing)
    ├─ prompts.ts        the instructions each step gives its agent (edits apply on the next turn, no restart)
-   └─ agents/index.ts   agent adapters: Claude Code / Codex → one event stream
+   ├─ agents/index.ts   agent adapters: Claude Code / Codex → one event stream
+   └─ line/             optional LINE bot on its own port: progress commands, notifications (docs/LINE.md)
    │  spawn (prompt on stdin, events streamed on stdout)
    ▼
 Agent workspace (repo root)
@@ -147,6 +148,9 @@ builder (kept across fix rounds); reviewers always start fresh.
 | POST | `/api/projects/:id/resume` · `/accept` · `/retry` · `/cancel` | continue after a pause · accept current results · retry a failed step · stop |
 | GET | `/api/projects/:id/events` | SSE event stream |
 | GET | `/files/:id/*` | files inside a project (video, frames) |
+| POST | `/api/line/code` | a new LINE link code, shown in the terminal too (`npm run line-code`; 404 while the LINE bot is off) |
+
+The optional LINE bot listens on its own port (`LINE_PORT`, default 4319) and serves only `POST /line/webhook`, signed by LINE. That port is the one to put behind an HTTPS tunnel; the API above stays on localhost. See [LINE.md](LINE.md).
 
 ## 7. Tools (`.claude/skills/video-clone/scripts/`)
 
