@@ -173,7 +173,7 @@ export function Conversation({ id, s, tag, setTag, onZoom }: { id: string; s: Sn
   const { out, live } = useMemo(() => buildThread(job), [job.chat?.length, job.log?.length, job.stage, job.log?.[job.log.length - 1]?.ts]);
   const canTalk = ['plan_review', 'done', 'error', 'needs_input', 'new', 'analyzing', 'styling', 'styled', 'planning', 'replanning'].includes(job.stage);
   const working = !!STAGE_DO[job.stage];
-  useEffect(() => { const b = box.current; if (b && stick.current) b.scrollTop = b.scrollHeight; }, [out.length, live.length, job.log?.length]);
+  useEffect(() => { const b = box.current; if (b && stick.current) b.scrollTop = b.scrollHeight; }, [out.length, live.length, job.log?.[job.log.length - 1]?.ts]);
   const onScroll = () => { const b = box.current!; stick.current = b.scrollHeight - b.scrollTop - b.clientHeight < 80; };
   const send = async () => {
     if ((!text.trim() && !files.length) || !canTalk) return; setErr(''); setSending(true);
@@ -243,9 +243,10 @@ const hms = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? '' : 
 function LogView({ id, job }: { id: string; job: Job }) {
   const log = job.log || [], box = useRef<HTMLDivElement>(null), stick = useRef(true);
   const [who, setWho] = useState('all'), [q, setQ] = useState('');
-  const whos = useMemo(() => [...new Set(log.map((e) => e.who || '_'))], [log.length]);
+  const last = log[log.length - 1]?.ts;   // the length stops changing at the server's 600-entry cap; the last entry doesn't
+  const whos = useMemo(() => [...new Set(log.map((e) => e.who || '_'))], [last]);
   const rows = log.filter((e) => e.type !== 'session' && (who === 'all' || (e.who || '_') === who) && (!q || JSON.stringify(e).toLowerCase().includes(q.toLowerCase())));
-  useEffect(() => { const b = box.current; if (b && stick.current) b.scrollTop = b.scrollHeight; }, [rows.length]);
+  useEffect(() => { const b = box.current; if (b && stick.current) b.scrollTop = b.scrollHeight; }, [rows.length, last]);
   const download = () => {
     const txt = log.map((x) => { const e = x as LogEvent & { name?: string; state?: string; text?: string; detail?: string; phase?: string }; return `${e.ts}\t${e.who || '-'}\t${e.type}\t${e.name || e.state || ''}\t${(e.text || e.detail || e.phase || '').replace(/\n/g, ' ')}`; }).join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain;charset=utf-8' })); a.download = `${id}-log.txt`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
