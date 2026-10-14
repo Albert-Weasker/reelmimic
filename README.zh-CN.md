@@ -118,6 +118,7 @@ Claude Code 会自己读到 repo 里的 skills，Codex 会读 `AGENTS.md`，不�
 | `BUILDERS`、`MAX_AGENTS` | 一支片同时几个 AI 在做（默认 6）、所有项目加起来最多几个（默认 12） |
 | `PORT` | 网站用的端口（默认 4318） |
 | `DISCORD_WEBHOOK_URL`、`WEBHOOK_URL` | 企划好了、需要你处理、视频完成（Discord 会附上视频）或出错时发消息给你。`WEBHOOK_URL` 会收到 JSON：`{ event, id, title, stage, message, url }` |
+| `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 同样的通知改由 Telegram 机器人发（视频小于 50 MB 会直接发过去）。找 [@BotFather](https://t.me/BotFather) 建一个 bot 拿到 token，给它发任意一句话，再跑 `npm run doctor` 就会显示你的 chat id |
 | `REELMIMIC_URL` | 消息里链接的网址开头（默认 `http://localhost:4318`） |
 
 ## 文档
