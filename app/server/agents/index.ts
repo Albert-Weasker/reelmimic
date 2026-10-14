@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { AgentEvent, AgentKind, AgentStatus } from '../../shared/types.ts';
+import { killTree, treeOpts } from '../runner.ts';
 
 const IS_WIN = process.platform === 'win32';
 // An old codex-cli can shadow a current one on PATH (e.g. a runtime manager's copy). Prefer CODEX_BIN, then npm's global shim.
@@ -101,8 +102,9 @@ export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, sig
     const cmd = isClaude ? 'claude' : CODEX_BIN;
     const args = isClaude ? claudeArgs(sessionId) : codexArgs(sessionId, cwd);
     // Windows: npm shims (claude.cmd) need a shell; args are fixed literals, the prompt goes through stdin.
-    const child = spawn(cmd, args, { cwd, shell: IS_WIN, env: { ...process.env, HYPERFRAMES_NO_TELEMETRY: '1', DO_NOT_TRACK: '1' } });
-    if (signal) signal.addEventListener('abort', () => { try { IS_WIN ? spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F']) : child.kill('SIGTERM'); } catch {} });
+    // its own process group (POSIX), so a cancel stops the renders and browsers it started too, not only the CLI
+    const child = spawn(cmd, args, { cwd, shell: IS_WIN, ...treeOpts, env: { ...process.env, HYPERFRAMES_NO_TELEMETRY: '1', DO_NOT_TRACK: '1' } });
+    if (signal) { if (signal.aborted) killTree(child); else signal.addEventListener('abort', () => killTree(child), { once: true }); }
     lines(child.stdout, (l) => {
       let obj: Json; try { obj = JSON.parse(l); } catch { return; }
       (isClaude ? parseClaude : parseCodex)(obj, emit, st);

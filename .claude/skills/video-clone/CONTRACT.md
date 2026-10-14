@@ -2,6 +2,7 @@
 
 每支影片一個資料夾 `projects/<id>/`。Agent（Claude Code 或 Codex）與 App 後端只透過這些檔案溝通，
 所以兩種 agent 都能接，前端也只要讀檔案就能畫出畫面。**Agent 必須照這裡的路徑與欄位寫檔。**
+伺服器在每個回合結束時會檢查這一步必須寫的 JSON 檔（企劃、production.json、審查、修正、評審）：格式不對會請你在同一個對話重寫一次，還是不對這一步就會停下。
 
 ```
 projects/<id>/

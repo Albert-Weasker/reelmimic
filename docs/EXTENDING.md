@@ -11,7 +11,7 @@ Extension points, from shallow to deep:
 | Change how an agent handles a step | `app/server/prompts.ts` | Text only, applies on the next turn |
 | Give agents a new tool | `.claude/skills/video-clone/scripts/` | Write the script, then mention it in a prompt / SKILL.md |
 | Plug in another AI director (a new agent CLI) | `app/server/agents/index.ts` | Yes |
-| Change the steps or order of the production line | `app/server/jobs.ts` + `prompts.ts` + `CONTRACT.md` | Yes |
+| Change the steps or order of the production line | `app/server/` (see §5) + `prompts.ts` + `CONTRACT.md` | Yes |
 
 ---
 
@@ -125,16 +125,21 @@ The agent must be able to: read and write files in the repo, run a shell (python
 
 ## 5. Change the production line
 
-Main functions in `app/server/jobs.ts`:
+Where each part lives in `app/server/`:
 
-- `production()`: setup → `castGate()` (runs alongside segment building) → `runChunk()` × N → assemble.
-- `castGate()` / `castSerial()`: per-character parallel review and fixing; the serial version is used for a single
-  character or shared-file work.
-- `finalPanel()`: final critic ⇄ revise.
-- `turn()`: dispatches one agent turn (session handling, global slots, required-file check).
+- `preprod.ts` — `preProduction()`: plan core → characters and assets in parallel → plan frames.
+- `production.ts` — `production()`: setup → `castGate()` (runs alongside segment building) → `runChunk()` × N → assemble.
+- `cast.ts` — `castGate()` / `castSerial()`: per-character parallel review and fixing; the serial version is used for a
+  single character or shared-file work.
+- `final.ts` — `finalPanel()`: final critic ⇄ revise.
+- `review.ts` — `reviewFix()`: the review → fix loop all of the above share. A new gate is a `review`, a `verdict`, a
+  `limit` and a `fix`; the loop handles rounds, pauses and stopping at the limit.
+- `turn.ts` — `turn()`: dispatches one agent turn (session handling, global slots, required-file check, failure reason);
+  `step()` is a turn that also moves the stage.
+- `jobs.ts` — the user's actions. Each runs as the project's single flow (`runner.ts`), so Cancel reaches all of it.
 
-When changing a step, change three places together: `jobs.ts` (flow), `prompts.ts` (instructions) and `CONTRACT.md`
-(format of any new file); plus `Project.tsx` if the web app should show it.
+When changing a step, change three places together: the flow file above, `prompts.ts` (instructions) and `CONTRACT.md`
+(format of any new file; if the server acts on it, add its schema to `contract.ts`); plus `Project.tsx` if the web app should show it.
 Parameters (parallelism, rounds per gate) are in `CONFIG` and can also be set through environment variables.
 
 ## 6. Adding UI text / translations
