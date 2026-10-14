@@ -38,7 +38,8 @@ async function post(url: string, init: RequestInit, what: string) {
   try {
     const r = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(60000), ...init });
     if (!r.ok) console.error(`notify: ${what} answered ${r.status} ${(await r.text()).slice(0, 200)}`);
-  } catch (e) { console.error(`notify: ${what} failed: ${(e as Error).message}`); }
+    return r.ok;
+  } catch (e) { console.error(`notify: ${what} failed: ${(e as Error).message}`); return false; }
 }
 
 export async function send(job: Job, event: NotifyEvent) {
@@ -58,12 +59,14 @@ export async function send(job: Job, event: NotifyEvent) {
   }
   if (telegramOn()) {   // plain text (no parse_mode), so titles and errors need no escaping
     const chat = process.env.TELEGRAM_CHAT_ID!, msg = `${text}\n${url}`;
+    const sendText = () => post(telegram('sendMessage'), { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text: msg.slice(0, 4096), link_preview_options: { is_disabled: true } }) }, 'Telegram');
     if (size <= TELEGRAM_FILE_LIMIT) {
       const form = new FormData();
       form.append('chat_id', chat); form.append('caption', msg.slice(0, 1024)); form.append('supports_streaming', 'true');
       form.append('video', await videoBlob(), 'video.mp4');
-      work.push(post(telegram('sendVideo'), { body: form }, 'Telegram'));
-    } else work.push(post(telegram('sendMessage'), { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text: msg.slice(0, 4096), link_preview_options: { is_disabled: true } }) }, 'Telegram'));
+      // a failed upload (timeout, file rejected) still tells you it's done
+      work.push(post(telegram('sendVideo'), { body: form }, 'Telegram video').then((ok) => ok || sendText()));
+    } else work.push(sendText());
   }
   if (process.env.WEBHOOK_URL) work.push(post(process.env.WEBHOOK_URL, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event, id: job.id, title, stage: job.stage, message: text, url }) }, 'webhook'));
   await Promise.all(work);

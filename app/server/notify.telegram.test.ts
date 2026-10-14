@@ -9,13 +9,14 @@ import type { AddressInfo } from 'node:net';
 import type { Job, Stage } from '../shared/types.ts';
 
 type Hit = { path: string; type: string; body: string };
-let hits: Hit[] = [], status = 200;
+let hits: Hit[] = [], status = 200, videoStatus = 200;
 const srv = createServer((req, res) => {
   let body = '';
   req.setEncoding('latin1');
   req.on('data', (d) => (body += d)).on('end', () => {
     hits.push({ path: req.url || '', type: req.headers['content-type'] || '', body });
-    res.statusCode = status; res.end(status === 200 ? '{"ok":true}' : '{"ok":false,"error_code":401,"description":"Unauthorized"}');
+    const code = req.url?.endsWith('/sendVideo') && videoStatus !== 200 ? videoStatus : status;
+    res.statusCode = code; res.end(code === 200 ? '{"ok":true}' : `{"ok":false,"error_code":${code},"description":"nope"}`);
   });
 });
 await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
@@ -28,7 +29,7 @@ const N = await import('./notify.ts');
 
 const stop = N.startNotifier();
 after(() => { stop?.(); srv.close(); rmSync(TMP, { recursive: true, force: true }); });
-beforeEach(() => { hits = []; status = 200; });
+beforeEach(() => { hits = []; status = 200; videoStatus = 200; });
 
 J.createJob({ id: 't1', title: 'brief line', agent: 'claude', brief: '', reference: { type: 'url', src: 'x' }, lang: 'en' });
 writeFileSync(join(J.dirOf('t1'), 'plan.json'), JSON.stringify({ title: 'Lantern Walk' }));
@@ -66,6 +67,14 @@ test('done: the video is sent with the message as its caption', async () => {
   assert.match(hits[0].body, /name="caption"\r\n\r\n"Lantern Walk" is done\.\r?\nhttps:\/\/studio\.example\/#\/p\/t1\r\n/);   // multipart turns \n into \r\n
   assert.match(hits[0].body, /filename="video\.mp4"/);
   assert.match(hits[0].body, /fake mp4 bytes/);
+});
+
+test('done: if the video upload fails, the message still goes out as text', async () => {
+  videoStatus = 413;
+  const orig = console.error; console.error = () => {};
+  try { moveTo('producing'); moveTo('done'); await settle(2); } finally { console.error = orig; }
+  assert.deepEqual(hits.map((h) => h.path), ['/bot123:SECRET/sendVideo', '/bot123:SECRET/sendMessage']);
+  assert.match(JSON.parse(hits[1].body).text, /"Lantern Walk" is done\.\nhttps:\/\/studio\.example\/#\/p\/t1/);
 });
 
 test('done: a video over the 50 MB bot upload limit sends just the message', async () => {
