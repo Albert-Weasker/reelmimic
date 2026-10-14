@@ -30,7 +30,8 @@ export type Report = {
 };
 export type Route = { engine?: string; style?: string; medium?: string; confidence?: number; why?: string[] };
 export type MustFix = { shot?: string; time?: number | null; issue: string; fix?: string };
-export type Critique = { pass?: boolean; summary?: string; scores?: Record<string, number>; must_fix?: (MustFix | null)[] };
+export type PeakVerdict = { id: string; ours?: number[]; ref?: number[]; strip?: string; verdict?: 'ours_better' | 'equal' | 'ref_better'; why?: string };
+export type Critique = { pass?: boolean; summary?: string; scores?: Record<string, number>; must_fix?: (MustFix | null)[]; peaks?: PeakVerdict[] };
 export type Production = { characters?: { id: string; name?: string }[] };
 export type LyricLine = { start?: number; end?: number; text: string; match: number };
 export type Lyrics = { lines?: LyricLine[] };

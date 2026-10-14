@@ -15,7 +15,8 @@ export interface Production {
 export interface SharedItem { status: 'shared'; issue: string; shot?: string; character?: string; [k: string]: unknown }
 export interface ShotEntry { id: string; pass?: boolean; issues?: Issue[] }
 export interface ChunkReview { shots?: ShotEntry[]; verified_fixes?: unknown[]; needs_user?: NeedRequest[]; pass?: boolean; issues?: Issue[] }
-export interface Critique { must_fix?: { shot?: string; time?: number; issue: string; fix?: string }[]; needs_user?: NeedRequest[] }
+export interface PeakVerdict { id: string; ours?: number[]; ref?: number[]; strip?: string; verdict?: 'ours_better' | 'equal' | 'ref_better'; why?: string }
+export interface Critique { must_fix?: { shot?: string; time?: number; issue: string; fix?: string }[]; needs_user?: NeedRequest[]; peaks?: PeakVerdict[] }
 
 type NoVars = Record<never, never>;
 

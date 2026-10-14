@@ -132,6 +132,10 @@ Claude Code 会自己读到 repo 里的 skills，Codex 会读 `AGENTS.md`，不�
 - 歌词只用你给的文本，不会自己去下载商业歌曲。
 - 做出来的视频要怎么用，请自己确认有没有权利。
 
+## Star 趋势
+
+[![Star History Chart](https://api.star-history.com/svg?repos=edenfunf/reelmimic&type=Date)](https://star-history.com/#edenfunf/reelmimic&Date)
+
 ## 授权
 
 代码用 [MIT](LICENSE) 授权。里面附的第三方 skill 和素材照它们原本的授权，细节在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

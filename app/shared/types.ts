@@ -15,6 +15,8 @@ export type Rounds = Record<RoundKey, number>;
 export interface Config extends Rounds {
   builders: number;
   maxAgentsGlobal: number;
+  maxReviews: number;
+  overlapCast: boolean;
 }
 
 export interface Reference { type: 'file' | 'url'; src: string }

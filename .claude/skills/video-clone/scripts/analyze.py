@@ -9,14 +9,20 @@ Writes into --out:
     audio.wav         mono audio, phase-safe and loudness-normalised (only if the input has sound)
     sheet_1fps.jpg    one frame per second, tiled — look at this first
     sheet_scenes.jpg  the middle frame of every detected shot
-    report.json       everything measured: size, crop, shots, pacing, tempo, beats, audio health, best 30 s windows
+    report.json       everything measured: size, crop, shots, pacing, tempo, beats, audio health, best 30 s windows,
+                      and peak_candidates (where the music builds and hits: the reference's likely goosebump moments)
+
+Results are cached per input (URL, or file content) in ~/.reelmimic/cache/analysis/: the same reference is analysed once.
 
 Lessons baked in (each one broke a real run):
     - phone screen recordings: the video is a strip in the middle of a UI → cropdetect, then analyse the proxy
     - stereo recordings with inverted phase cancel to silence when summed to mono → measure L, R and L+R separately
     - loudness: normalise the chosen channel so beat tracking sees the music, not the noise floor
 """
-import argparse, json, os, re, shutil, subprocess, sys, collections
+import argparse, hashlib, json, os, re, shutil, subprocess, sys, collections
+
+ANALYZE_VERSION = 2   # bump when report.json gains fields, so cached analyses are redone
+CACHE = os.path.join(os.path.expanduser("~"), ".reelmimic", "cache", "analysis")
 
 FFMPEG_FALLBACK = os.environ.get("FFMPEG_DIR", "")   # folder with ffmpeg/ffprobe when they are not on PATH
 if not shutil.which("ffmpeg") and FFMPEG_FALLBACK and os.path.isdir(FFMPEG_FALLBACK):
@@ -243,19 +249,108 @@ def audio(path, info, out):
     cands.sort(reverse=True)
     # noise floor: the quietest 10th percentile of 0.5 s windows
     hop = sr // 2; w = [db(y[i:i + hop]) for i in range(0, len(y) - hop, hop)]
+    peaks = peak_candidates(y, sr, beats)
     return {"present": True, "silent": False, "levels_db": {"L": round(L, 1), "R": round(R, 1), "mono": round(M, 1)},
             "phase_inverted": bool(phase_inverted), "noise_floor_db": round(float(np.percentile(w, 10)), 1) if w else None,
             "bpm": round(bpm, 2), "beat_seconds": round(60 / bpm, 4), "first_beat": round(float(beats[0]), 3) if len(beats) else None,
             "beats": [round(float(b), 3) for b in beats],
             "best_30s_starts": [{"start": round(s, 2), "density": round(m, 3)} for m, s in cands[:5]],
+            "peak_candidates": peaks,
             "quality_warning": ("mono only (phase-inverted stereo)" if phase_inverted else None)}
+
+
+def peak_candidates(y, sr, beats, n=3):
+    """Where the music builds and then hits: the moments a reference spends its biggest visual on. Three curves in
+    0.25 s steps (loudness, onset strength, spectral fullness), each z-scored and summed, because mastered pop is
+    loudness-flat and only gets fuller and busier at a chorus. A candidate is the sharpest rise from the 2 s before to
+    the 1 s after, scored higher when a quieter stretch (the held breath) sits right before it; snapped to the nearest
+    beat. Numbers only point: the director confirms by looking at the frames."""
+    import numpy as np, librosa
+    hop = sr // 4
+    rms = librosa.feature.rms(y=y, frame_length=hop * 2, hop_length=hop)[0]
+    onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    bw = librosa.feature.spectral_bandwidth(y=y, sr=sr, hop_length=hop)[0]
+    m = min(len(rms), len(onset), len(bw))
+    if m < 24: return []
+    z = lambda v: (v - v.mean()) / (v.std() + 1e-9)
+    cur = z(20 * np.log10(rms[:m] + 1e-9)) + z(onset[:m]) + z(bw[:m])
+    sm = np.convolve(cur, np.ones(4) / 4, mode="same")
+    out = []
+    for i in range(8, m - 4):
+        before, after = sm[i - 8:i].mean(), sm[i:i + 4].mean()
+        rise = after - before
+        if rise < 0.8: continue
+        dip = float(sm[i - 8:i].min())
+        out.append((rise + 0.5 * max(0.0, before - dip) + 0.3 * after, i * 0.25, rise, after))
+    out.sort(reverse=True)
+    picked = []
+    for score, t, rise, after in out:
+        if len(beats): t = float(beats[np.argmin(np.abs(np.asarray(beats) - t))])
+        if any(abs(t - p["t"]) < 6 for p in picked): continue
+        picked.append({"t": round(t, 2), "rise": round(float(rise), 2), "level_after": round(float(after), 2),
+                       "kind": "drop" if rise >= 2.5 else "lift"})
+        if len(picked) >= n: break
+    return sorted(picked, key=lambda p: p["t"])
+
+
+def flashes(path, dur):
+    """Frames much brighter than the frames around them (white flash / impact frames) and the busiest cut stretch:
+    references often mark their hit with a flash. 6 fps luminance, 64 px wide."""
+    import numpy as np
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf", "fps=6,scale=64:36,format=gray", "-f", "rawvideo", "-"],
+                       capture_output=True)
+    a = np.frombuffer(r.stdout, np.uint8)
+    if not len(a): return []
+    lum = a[: len(a) // (64 * 36) * 64 * 36].reshape(-1, 64 * 36).mean(1) / 255
+    out = []
+    for i in range(2, len(lum) - 2):
+        ctx = np.r_[lum[i - 2:i], lum[i + 1:i + 3]]
+        if lum[i] > 0.75 and lum[i] - ctx.min() > 0.3:
+            t = round(i / 6, 2)
+            if not out or t - out[-1] > 1: out.append(t)
+    return out
+
+
+def cache_key(src):
+    """URL → the URL; local file → its size plus the first and last 4 MB (the same file copied into another project hits)."""
+    h = hashlib.sha1(f"v{ANALYZE_VERSION}|".encode())
+    if os.path.isfile(src):
+        size = os.path.getsize(src); h.update(str(size).encode())
+        with open(src, "rb") as f:
+            h.update(f.read(4 << 20))
+            if size > 8 << 20: f.seek(-(4 << 20), 2); h.update(f.read())
+    else:
+        h.update(src.strip().encode())
+    return h.hexdigest()[:16]
+
+
+def summary(rep, out):
+    info, crop, au = rep["video"], rep["crop"], rep["audio"]
+    print(f"video   {info['width']}x{info['height']} {info['fps']}fps {info['duration']:.1f}s" + (f"  crop → {crop['w']}x{crop['h']} ({crop['note']})" if crop else ""))
+    print(f"shots   {rep['pacing']}")
+    if rep.get("look_summary"): print(f"look    {rep['look_summary']}")
+    if au.get("present") and not au.get("silent"):
+        print(f"audio   {au['bpm']} bpm, first beat {au['first_beat']}s, noise floor {au['noise_floor_db']} dB, phase_inverted={au['phase_inverted']}")
+        print(f"best 30s windows: {[c['start'] for c in au['best_30s_starts']]}")
+        print(f"peak candidates (build → hit): {[(p['t'], p['kind']) for p in au.get('peak_candidates', [])]}")
+    if rep.get("flashes"): print(f"flash frames: {rep['flashes']}")
+    elif au.get("silent"): print("audio   SILENT —", au["note"])
+    else: print("audio   none")
+    print("wrote", os.path.join(out, "report.json"))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src"); ap.add_argument("--out", required=True)
+    ap.add_argument("--no-cache", action="store_true")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    key = cache_key(a.src); cdir = os.path.join(CACHE, key)
+    if not a.no_cache and os.path.isfile(os.path.join(cdir, "report.json")):
+        shutil.copytree(cdir, a.out, dirs_exist_ok=True)
+        with open(os.path.join(a.out, "report.json"), encoding="utf-8") as f: rep = json.load(f)
+        print(f"cache   same reference analysed before ({key}): reused")
+        summary(rep, a.out); return
     src = fetch(a.src, a.out)
     info = probe(src)
     crop = None
@@ -272,6 +367,7 @@ def main():
                                      "shortest_s": round(min(lens), 2) if lens else None, "longest_s": round(max(lens), 2) if lens else None},
            "audio": aud.result(),
            "shot_details": shot_details(vid, cuts, info["duration"]) if info["width"] else []}
+    if info["width"]: rep["flashes"] = flashes(vid, info["duration"])
     sd = rep["shot_details"]
     if sd:
         dark = sum(1 for x in sd if x["look"]["dark_ratio"] > 0.5) / len(sd)
@@ -283,16 +379,11 @@ def main():
         rep["pacing"]["mean_shot_beats"] = round(rep["pacing"]["mean_shot_s"] / rep["audio"]["beat_seconds"], 1)
     with open(os.path.join(a.out, "report.json"), "w", encoding="utf-8") as f:
         json.dump(rep, f, ensure_ascii=False, indent=1)
-    au = rep["audio"]
-    print(f"video   {info['width']}x{info['height']} {info['fps']}fps {info['duration']:.1f}s" + (f"  crop → {crop['w']}x{crop['h']} ({crop['note']})" if crop else ""))
-    print(f"shots   {rep['pacing']}")
-    if rep.get("look_summary"): print(f"look    {rep['look_summary']}")
-    if au.get("present") and not au.get("silent"):
-        print(f"audio   {au['bpm']} bpm, first beat {au['first_beat']}s, noise floor {au['noise_floor_db']} dB, phase_inverted={au['phase_inverted']}")
-        print(f"best 30s windows: {[c['start'] for c in au['best_30s_starts']]}")
-    elif au.get("silent"): print("audio   SILENT —", au["note"])
-    else: print("audio   none")
-    print("wrote", os.path.join(a.out, "report.json"))
+    try:   # cache the whole analysis folder (the agents later read source/proxy from it too)
+        shutil.copytree(a.out, cdir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("STYLE.md", "route.json", "proposed_style_*", "song", "lyrics"))
+    except OSError as e:
+        print("cache   not written:", e)
+    summary(rep, a.out)
 
 
 if __name__ == "__main__":

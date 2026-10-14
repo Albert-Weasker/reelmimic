@@ -34,7 +34,9 @@ export function Project({ id }: { id: string }) {
     let t: ReturnType<typeof setTimeout> | undefined, alive = true;
     const load = () => api.project(id).then((d) => { if (alive) { setS(d as SnapshotView); setV((x) => x + 1); } }).catch(() => {});
     load();
-    const off = api.events(id, () => { clearTimeout(t); t = setTimeout(load, 350); });
+    // also reload when the stream (re)opens: whatever changed while it was down (a restart marking the job interrupted) arrives no other way
+    const soon = () => { clearTimeout(t); t = setTimeout(load, 350); };
+    const off = api.events(id, soon, soon);
     return () => { alive = false; off(); clearTimeout(t); };
   }, [id]);
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === 'Escape' && setZoom(null); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, []);
@@ -74,7 +76,7 @@ export function Project({ id }: { id: string }) {
           {preProd && (s.requiredInputs || []).length > 0 && <RequiredInputs id={id} s={s} editable top />}
           {tabs.length > 1 && <div className="tabs" role="tablist">{tabs.map((t) => <button key={t.k} role="tab" aria-selected={cur === t.k} className={cur === t.k ? 'on' : ''} onClick={() => setTab(t.k)}><I n={t.ico} />{t.label}{t.badge && <span className={`tb ${t.badge[1]}`}>{t.badge[0]}</span>}</button>)}</div>}
           <div key={cur} className="fade-in">
-            {cur === 'result' && <Result s={s} file={file} />}
+            {cur === 'result' && <Result s={s} file={file} onZoom={onZoom} />}
             {cur === 'pipe' && <Pipeline s={s} file={file} onZoom={onZoom} />}
             {cur === 'pipe' && !job.pipeline?.phase && s.checks.length > 0 && <div className="card"><div className="card-h"><h2>審查影格</h2></div><div className="gallery">{s.checks.slice(0, 12).map((c) => <img key={c} className="shot-img" src={file(c)} onClick={() => onZoom(file(c))} />)}</div></div>}
             {cur === 'plan' && <Plan s={s} file={file} job={job} onTag={setTag} onZoom={onZoom} />}
@@ -91,7 +93,8 @@ export function Project({ id }: { id: string }) {
 
 function LiveBanner({ id, job }: { id: string; job: Job }) {
   const now = useNow(true);
-  const { live } = useMemo(() => buildThread(job), [job.log?.length, job.stage]);
+  // the server keeps the latest 600 log entries, so the length stops changing: key on the last entry
+  const { live } = useMemo(() => buildThread(job), [job.log?.[job.log.length - 1]?.ts, job.stage]);
   const since = live.length ? Math.min(...live.map((b) => new Date(b.start).getTime())) : new Date(job.updatedAt!).getTime();
   const detail = job.stage === 'producing' || job.stage === 'critiquing' || job.stage === 'revising' ? PIPE_DO[job.pipeline?.phase ?? ''] : null;
   return (
@@ -225,7 +228,7 @@ function Asset({ a, file }: { a: PlanAsset; file: FileUrl }) {
   const src = a.file ? file(a.file) : undefined, isImg = src && /\.(jpe?g|png|webp|gif|svg)$/i.test(a.file!), isAud = src && /\.(mp3|m4a|wav|ogg)$/i.test(a.file!);
   return (
     <div className="asset">
-      <div className="pv" style={isImg ? { backgroundImage: `url(${src})` } : undefined}>{isAud ? <audio controls src={src} /> : !isImg && <I n={a.kind === 'music' || a.kind === 'sfx' ? 'music' : a.kind === 'font' ? 'doc' : 'image'} />}</div>
+      <div className="pv" style={isImg ? { backgroundImage: `url("${src}")` } : undefined}>{isAud ? <audio controls src={src} /> : !isImg && <I n={a.kind === 'music' || a.kind === 'sfx' ? 'music' : a.kind === 'font' ? 'doc' : 'image'} />}</div>
       <div className="b"><b>{a.id} · {a.purpose}</b><span className="faint">{ASTATUS[a.status ?? ''] || a.status}{a.source && ` · ${a.source}`}</span>
         <span className={`cap ${a.license ? 'ok' : a.status === 'drawn_in_code' ? '' : 'warn'}`} style={{ justifySelf: 'start', height: 20, fontSize: 11 }}>{a.license || (a.status === 'drawn_in_code' ? '原創' : '授權未填')}</span></div>
     </div>
@@ -452,7 +455,7 @@ function Pipeline({ s, file, onZoom }: { s: SnapshotView; file: FileUrl; onZoom:
 // ---------- result: review the video like an editor — pause anywhere, type the note right there, send them all at once ----------
 const tc = (x: number) => { const m = Math.floor(x / 60), s = x - m * 60; return `${m}:${s < 10 ? '0' : ''}${s.toFixed(1)}`; };
 type Note = { id: number; t: number; text: string; thumb: string | null };
-function Result({ s, file }: { s: SnapshotView; file: FileUrl }) {
+function Result({ s, file, onZoom }: { s: SnapshotView; file: FileUrl; onZoom: Zoom }) {
   const id = s.job.id, key = `notes:${id}`, v = useRef<HTMLVideoElement>(null), input = useRef<HTMLTextAreaElement>(null);
   const [t, setT] = useState(0), [d, setD] = useState(0), [text, setText] = useState(''), [pin, setPin] = useState<number | null>(null);
   const [notes, setNotes] = useState<Note[]>(() => { try { return JSON.parse(localStorage.getItem(key) ?? 'null') || []; } catch { return []; } });
@@ -508,17 +511,23 @@ function Result({ s, file }: { s: SnapshotView; file: FileUrl }) {
           <button className="btn primary" disabled={!canSend || sending || notes.some((n) => !n.text.trim())} onClick={send}>{sending ? <span className="spin-ring" /> : <I n="up" s={2.4} />}送出 {notes.length} 則修改</button>
         </div>
       </div>}
-      {s.critique && <Critique c={s.critique} onSeek={seek} id={id} stage={s.job.stage} />}
+      {s.critique && <Critique c={s.critique} onSeek={seek} id={id} stage={s.job.stage} file={file} onZoom={onZoom} />}
     </section>
   );
 }
-function Critique({ c, onSeek, id, stage }: { c: CritiqueData; onSeek?: (t: number) => void; id: string; stage: Stage }) {
+const VERDICT = { ours_better: ['贏過參考片', 'ok'], equal: ['和參考片同級', 'ok'], ref_better: ['輸給參考片', 'bad'] } as const;
+function Critique({ c, onSeek, id, stage, file, onZoom }: { c: CritiqueData; onSeek?: (t: number) => void; id: string; stage: Stage; file: FileUrl; onZoom: Zoom }) {
   const sc = Object.entries(c.scores || {}), must = (c.must_fix || []).filter((m): m is MustFix => !!m), [busy, setBusy] = useState(false);
   const fix = async () => { setBusy(true); try { await api.message(id, `照獨立評審列的 ${must.length} 項必修全部修改：\n` + must.map((m, i) => `${i + 1}. [${m.shot || '全片'}${m.time != null ? ' ' + m.time + 's' : ''}] ${m.issue}`).join('\n')); } finally { setBusy(false); } };
   return (
     <div className="critique">
       <div className="row"><div className="avatar-ai critic"><I n="mag" /></div><b>獨立評審</b><span className="grow" /><span className={`cap ${c.pass ? 'ok' : 'bad'}`}>{c.pass ? <><I n="check" s={2.4} />通過</> : `${must.length} 項必修`}</span></div>
       {c.summary && <p className="small muted" style={{ margin: '10px 0 0' }}>{c.summary}</p>}
+      {(c.peaks || []).length > 0 && <div style={{ marginTop: 12 }}><div className="sub-h" style={{ marginTop: 0 }}>高潮對決（上：參考片，下：我們）</div>
+        {c.peaks!.map((p) => { const [label, cls] = VERDICT[p.verdict || 'equal'] || VERDICT.equal; return <div key={p.id} style={{ marginBottom: 10 }}>
+          <div className="row"><span className="tagc">{p.id}{p.ours?.length ? ` · ${p.ours[0]}–${p.ours[1]}s` : ''}</span><span className={`cap ${cls}`}>{label}</span></div>
+          {p.why && <p className="small muted" style={{ margin: '6px 0' }}>{p.why}</p>}
+          {p.strip && <img className="shot-img" src={file(p.strip)} onClick={() => onZoom(file(p.strip!))} />}</div>; })}</div>}
       {sc.length > 0 && <div className="scores">{sc.map(([k, v]) => <div key={k} className={`score ${v < 4 ? 'low' : ''}`}><div className="row"><span>{k}</span><b>{v}</b></div><div className="pips">{[1, 2, 3, 4, 5].map((n) => <i key={n} className={n <= v ? 'on' : ''} />)}</div></div>)}</div>}
       {must.length > 0 && <ul className="issues" onClick={(e) => (e.target as Element).closest('li')?.classList.toggle('open')}>{must.map((m, i) => <li key={i} className={typeof m.time === 'number' ? 'seekable' : ''} onClick={() => typeof m.time === 'number' && onSeek?.(m.time)}><span className="tagc">{m.shot || '全片'}{typeof m.time === 'number' ? ` · ${m.time}s` : ''}</span><span>{m.issue}{m.fix && <span className="faint"> → {m.fix}</span>}</span></li>)}</ul>}
       {!c.pass && must.length > 0 && ['done', 'error'].includes(stage) && <div className="row" style={{ marginTop: 12 }}><button className="btn sm primary" disabled={busy} onClick={fix}>{busy ? <span className="spin-ring" /> : <I n="wand" />}照評審的 {must.length} 項全部修</button><span className="small faint">或在上方影片時間軸自己標要改的地方</span></div>}

@@ -9,6 +9,7 @@ import type { AgentRun } from './agents/index.ts';
 
 const TMP = mkdtempSync(join(tmpdir(), 'reelmimic-pipe-'));
 process.env.REELMIMIC_PROJECTS = TMP;
+process.env.PRERENDER_WAIT_MS = '2000';   // assembly gives up on a stuck background render after 2 s here
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
 // ---------- the fake agent ----------
@@ -19,8 +20,9 @@ interface Scenario {
   shotPass: (shot: string, round: number) => boolean;
   sharedFix?: (chunk: string, call: number) => boolean;    // the builder reports a shared-file problem instead
   castShared?: (char: string, call: number) => boolean;
-  critique: (round: number) => { must?: number; needs?: number };
+  critique: (round: number) => { must?: number; needs?: number; lostPeak?: boolean };
   buildDelayMs?: number;                                   // let the per-shot watcher (every 4 s) pick shots up
+  prerender?: string;                                      // production.json prerender command
 }
 let S: Scenario;
 let calls: string[] = [];
@@ -31,14 +33,14 @@ function outputs(prompt: string, dir: string): [string, Record<string, unknown>]
   const m = (re: RegExp) => prompt.match(re);
   const json = (o: unknown) => o;
   let r: RegExpMatchArray | null;
-  if (m(/## 步驟：風格拆解/)) return ['style', { 'analysis/STYLE.md': '# 2D', 'analysis/route.json': { engine: 'no-such-engine' } }];
+  if (m(/## 步驟：風格拆解/)) return ['style', { 'analysis/STYLE.md': '# 2D', 'analysis/route.json': { engine: 'no-such-engine' }, 'analysis/peaks.json': [{ id: 'P1', hit: 2 }] }];
   if (m(/## 步驟：前製企劃/)) return ['plan', { 'plan.json': { title: 'T', version: 1, characters: S.chars.map((id) => ({ id, name: id, file: `build/${id}.js` })) }, 'STORYBOARD.md': '# SB' }];
   if ((r = m(/## 步驟：做角色「[^」]+」[\s\S]*?只寫 (\S+?)：/))) return [`pre_cast`, { [r[1]]: '// character' }];
   if (m(/## 步驟：整合前製結果/)) return ['plan_frames', { 'plan.json': { title: 'T', version: 2, characters: S.chars.map((id) => ({ id, name: id, file: `build/${id}.js` })) } }];
   if (m(/## 步驟：依使用者意見修改企劃/)) return ['replan', { 'plan.json': { title: 'T', version: 3 } }];
   if (m(/## 步驟：製作準備/)) return ['setup', {
-    'build/production.json': { chunks: S.chunks, characters: S.chars.map((id) => ({ id, name: id, file: `build/${id}.js`, sheet: `out/check/cast/sheet_${id}.jpg` })) },
-    'out/check/cast/sheet.jpg': 'jpg', ...Object.fromEntries(S.chars.map((id) => [`out/check/cast/sheet_${id}.jpg`, 'jpg'])) }];
+    'build/production.json': { ...(S.prerender ? { prerender: { cwd: '.', cmd: S.prerender } } : {}), chunks: S.chunks, characters: S.chars.map((id) => ({ id, name: id, file: `build/${id}.js`, sheet: `out/check/cast/sheet_${id}.jpg` })) },
+    ...(S.chars.length ? { 'out/check/cast/sheet.jpg': 'jpg' } : {}), ...Object.fromEntries(S.chars.map((id) => [`out/check/cast/sheet_${id}.jpg`, 'jpg'])) }];   // no cast → no sheet
   if (m(/## 步驟：角色關/)) {
     const round = +(m(/第 (\d+) 輪/)?.[1] || 1), ch = m(/結果寫到 out\/check\/cast\/review_(\S+?)\.json/)?.[1];
     const who = ch || (m(/只看並排圖/) ? 'lineup' : 'serial'), ok = S.castPass(who, round);
@@ -69,7 +71,7 @@ function outputs(prompt: string, dir: string): [string, Record<string, unknown>]
   if (m(/## 步驟：組裝成片/)) return ['assemble', { 'out/video.mp4': 'mp4' }];
   if (m(/獨立評審/)) {
     const round = bump(`critique-${dir}`), c = S.critique(round);
-    return [`critique`, { 'out/check/critique.json': { must_fix: Array.from({ length: c.must || 0 }, (_, i) => ({ shot: 'S1', issue: `must ${i}` })), needs_user: Array.from({ length: c.needs || 0 }, () => ({ kind: 'text', issue: 'confirm the lyric' })) } }];
+    return [`critique`, { 'out/check/critique.json': { peaks: [{ id: 'P1', verdict: c.lostPeak ? 'ref_better' : 'equal', why: 'smaller hit' }], must_fix: Array.from({ length: c.must || 0 }, (_, i) => ({ shot: 'S1', issue: `must ${i}` })), needs_user: Array.from({ length: c.needs || 0 }, () => ({ kind: 'text', issue: 'confirm the lyric' })) } }];
   }
   if (m(/## 步驟：修改成片/)) return ['revise', { 'out/video.mp4': 'mp4', 'out/check/fixes.json': [{ status: 'fixed' }] }];
   throw new Error('fake agent: unknown step\n' + prompt.slice(0, 300));
@@ -152,6 +154,74 @@ describe('production', () => {
     assert.ok(!calls.includes('fix:C1'));
     assert.deepEqual(calls.slice(-3), ['critique', 'revise', 'critique']);
     assert.equal(J.load(id).critiqueRounds, 2);
+  });
+
+  test('a climax that loses to the reference is sent back even with no must-fix listed', async () => {
+    S = base({ critique: (r) => ({ lostPeak: r === 1 }) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    assert.deepEqual(calls.slice(-3), ['critique', 'revise', 'critique']);
+    assert.ok(J.load(id).chat.some((c) => /高潮 P1 輸給參考片/.test(c.text) || /1 項必修/.test(c.text)));
+  });
+
+  test('no shot is built before the characters pass', async () => {
+    S = base({ castPass: (_w, r) => r >= 2 });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    const firstBuild = calls.findIndex((c) => c.startsWith('build:'));
+    assert.ok(firstBuild > calls.lastIndexOf('cast_qa:serial'), calls.join(' '));
+  });
+
+  test('one blocker left at the round limit gets one more round instead of pausing', async () => {
+    S = base({ shotPass: (s, r) => s !== 'S1' || r >= 4 });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    assert.ok(calls.includes('shot_qa:S1:4'));
+  });
+
+  test('past the final limit, revising continues while a short must-fix list keeps shrinking', async () => {
+    S = base({ critique: (r) => ({ must: [4, 3, 2, 1, 0][r - 1] }) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(calls.filter((c) => c === 'revise').length, 4);
+    assert.equal(J.load(id).lastCritique?.pass, true);
+  });
+
+  test('a must-fix list that stops shrinking stops at the limit', async () => {
+    S = base({ critique: () => ({ must: 2 }) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(calls.filter((c) => c === 'revise').length, 2);
+    assert.equal(J.load(id).lastCritique?.pass, false);
+  });
+
+  test('a passed segment is rendered in the background and assembly waits for it', async () => {
+    S = base({ prerender: 'node -e setTimeout(()=>{},300)' });
+    const id = newProject('plan_review');
+    writeFileSync(join(J.dirOf(id), 'plan.json'), JSON.stringify({ title: 'T', version: 1, shots: [{ id: 'S1', start_s: 0, end_s: 2 }, { id: 'S2', start_s: 2, end_s: 4 }] }));
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    const ev = readFileSync(join(J.dirOf(id), 'logs', 'events.jsonl'), 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
+    const pre = ev.filter((e) => e.name === 'prerender'), doneAt = ev.filter((e) => /背景渲染 C\d：完成/.test(e.text || ''));
+    assert.equal(pre.length, 2);
+    assert.equal(doneAt.length, 2);
+    const assemble = ev.findIndex((e) => e.type === 'turn' && e.phase === 'assemble');
+    assert.ok(ev.indexOf(doneAt[1]) < assemble, 'assembly started before the background render finished');
+  });
+
+  test('when assembly stops waiting for a stuck background render, renders queued behind it never start', async () => {
+    S = base({ prerender: 'node -e setTimeout(()=>{},20000)' });   // every background render hangs
+    const id = newProject('plan_review');
+    writeFileSync(join(J.dirOf(id), 'plan.json'), JSON.stringify({ title: 'T', version: 1, shots: [{ id: 'S1', start_s: 0, end_s: 2 }, { id: 'S2', start_s: 2, end_s: 4 }] }));
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    await new Promise((r) => setTimeout(r, 500));   // give a wrongly queued render time to show up
+    const ev = readFileSync(join(J.dirOf(id), 'logs', 'events.jsonl'), 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
+    assert.equal(ev.filter((e) => e.name === 'prerender').length, 1, 'a queued background render started after assembly gave up');
+    assert.ok(ev.some((e) => /背景渲染超過/.test(e.text || '')));
   });
 
   test('shot reviews start while the builder is still working (per-shot watcher)', async () => {
@@ -257,5 +327,57 @@ describe('pauses', () => {
     assert.deepEqual(calls, ['replan']);
     assert.equal(J.load(id).stage, 'plan_review');
     assert.equal(JSON.parse(readFileSync(join(J.dirOf(id), 'plan.json'), 'utf8')).version, 3);
+  });
+});
+
+describe('no characters', () => {
+  test('a piece with no cast (typography, motion graphics) skips the cast sheet and the cast gate', async () => {
+    S = base({ chars: [] });
+    const id = newProject('plan_review');
+    writeFileSync(join(J.dirOf(id), 'plan.json'), JSON.stringify({ title: 'T', version: 1, characters: [] }));
+    await J.approve(id);
+    const j = J.load(id);
+    assert.equal(j.stage, 'done', j.error || '');
+    assert.equal(j.pipeline.cast?.pass, true);
+    assert.ok(!calls.some((c) => c.startsWith('cast_')), calls.join(', '));
+  });
+
+  test('a project already stuck at setup (missing cast sheet) finishes on retry', async () => {
+    S = base({ chars: [] });
+    const id = newProject('error', { failed: 'producing', error: '缺少輸出：out/check/cast/sheet.jpg', pipeline: { phase: 'setup' } });
+    writeFileSync(join(J.dirOf(id), 'plan.json'), JSON.stringify({ title: 'T', version: 1, characters: [] }));
+    mkdirSync(join(J.dirOf(id), 'build'), { recursive: true });   // the setup turn itself had succeeded
+    writeFileSync(join(J.dirOf(id), 'build', 'production.json'), JSON.stringify({ chunks: S.chunks, characters: [] }));
+    await J.retry(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    assert.ok(!calls.includes('setup') && !calls.some((c) => c.startsWith('cast_')), calls.join(', '));
+  });
+
+  test('a note while paused in the shot line goes to the shots, not to a cast fix', async () => {
+    let s2 = 0;   // S2 fails its first four reviews (the round limit plus the extra round for a single blocker), then passes after the note
+    S = base({ chars: [], shotPass: (shot) => shot !== 'S2' || ++s2 > 4 });
+    const id = newProject('plan_review');
+    writeFileSync(join(J.dirOf(id), 'plan.json'), JSON.stringify({ title: 'T', version: 1, characters: [] }));
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'needs_input');
+    calls = [];
+    await J.message(id, 'make the title bigger');
+    assert.ok(!calls.some((c) => c.startsWith('cast_')), calls.join(', '));
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+  });
+});
+
+describe('restart', () => {
+  test('an interrupted job resumes on its own', async () => {
+    S = base();
+    const id = newProject('plan_review');
+    writeFileSync(join(J.dirOf(id), 'job.json'), JSON.stringify({ ...J.load(id), stage: 'replanning' }));
+    const cut = J.recoverOrphans();
+    assert.ok(cut.includes(id));
+    assert.equal(J.load(id).stage, 'error');
+    J.autoResume([id], 1);
+    for (let i = 0; i < 100 && J.load(id).stage !== 'plan_review'; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(J.load(id).stage, 'plan_review');
+    assert.ok(calls.includes('replan'));
   });
 });

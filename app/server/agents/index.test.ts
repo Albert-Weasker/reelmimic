@@ -60,8 +60,8 @@ test('Codex failure emits an error', () => {
 });
 
 test('long tool details are shortened', () => {
-  const { events } = run(parseClaude, [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: 'x'.repeat(300) } }] } }]);
+  const { events } = run(parseClaude, [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: 'x'.repeat(600) } }] } }]);
   const e = events[0] as Extract<AgentEvent, { type: 'tool' }>;
-  assert.equal(e.detail.length, 161);
+  assert.equal(e.detail.length, 401);
   assert.ok(e.detail.endsWith('…'));
 });

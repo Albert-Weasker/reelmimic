@@ -27,6 +27,40 @@ describe('cleanRounds', () => {
     assert.throws(() => J.cleanRounds({ castRounds: 11 }), /1 to 10/);
     assert.throws(() => J.cleanRounds({ chunkRounds: 2.5 }), /whole number/);
   });
+  test('the edges of the range pass', () => {
+    assert.deepEqual(J.cleanRounds({ castRounds: 1, finalRounds: 10 }), { castRounds: 1, finalRounds: 10 });
+    assert.deepEqual(J.cleanRounds({ chunkRounds: '10' }), { chunkRounds: 10 });
+  });
+  test('non-numeric input is rejected like the rest', () => {
+    assert.throws(() => J.cleanRounds({ castRounds: 'abc' }), /whole number/);
+  });
+});
+
+describe('isVideoName', () => {
+  test('accepts the video extensions in any letter case', () => {
+    for (const name of ['clip.mp4', 'CLIP.MOV', 'a.b.MkV', '參考影片.webm', 'x.avi', 'x.m4v', 'x.mpg', 'x.mpeg']) assert.ok(J.isVideoName(name), name);
+  });
+  test('rejects subtitles, documents, images and names with no extension', () => {
+    for (const name of ['subs.srt', 'brief.pdf', 'poster.png', 'song.mp3', 'clip.mp4.txt', 'reference', '.mp4']) assert.ok(!J.isVideoName(name), name);
+  });
+});
+
+describe('projectTitle', () => {
+  test('uses the title when one is given', () => {
+    assert.equal(J.projectTitle('My video', 'a brief', 'en'), 'My video');
+  });
+  test('falls back to the first non-empty line of the brief', () => {
+    assert.equal(J.projectTitle('', '\n  \nA video about cats\nmore', 'en'), 'A video about cats');
+    assert.equal(J.projectTitle('   ', 'Line one\r\nLine two', 'zh-TW'), 'Line one');
+  });
+  test('the placeholder follows the project language', () => {
+    assert.equal(J.projectTitle('', '\n', 'en'), 'Untitled');
+    assert.equal(J.projectTitle('', '', 'zh-TW'), '未命名');
+    assert.equal(J.projectTitle(undefined, '', 'zh-CN'), '未命名');
+  });
+  test('cuts at 40 characters without splitting an emoji', () => {
+    assert.equal(J.projectTitle('a'.repeat(39) + '🎬🎬', '', 'en'), 'a'.repeat(39) + '🎬');
+  });
 });
 
 describe('project settings', () => {

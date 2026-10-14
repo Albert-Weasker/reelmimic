@@ -25,6 +25,8 @@ const safeName = (n: string) => n.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
 const isUrl = (s: string | undefined) => /^https?:\/\/\S+$/i.test((s || '').trim());
 const guard = (res: Response, id: string) => { if (!/^[\w-]+$/.test(id) || !existsSync(join(J.dirOf(id), 'job.json'))) { res.status(404).json({ error: 'no such project' }); return false; } return true; };
 
+// Answers as soon as the server is listening: start.bat / start.sh poll it before opening the browser
+app.get('/api/health', (req, res) => res.json({ ok: true }));
 let AGENTS: AgentStatus | null = null;
 app.get('/api/agents', (req, res) => { AGENTS = AGENTS || agentStatus(); res.json(AGENTS); });
 app.get('/api/projects', (req, res) => res.json(J.listJobs()));
@@ -34,6 +36,10 @@ app.post('/api/projects', upload.fields([{ name: 'reference', maxCount: 1 }, { n
   const { url, brief = '', agent = 'claude', title } = req.body, lang = ['zh-TW', 'en', 'zh-CN'].includes(req.body.lang) ? req.body.lang : 'zh-TW';
   const files = req.files as Record<string, Upload[]> | undefined, ref = files?.reference?.[0];
   if (!ref && !isUrl(url)) return res.status(400).json({ error: '請上傳參考影片或貼上影片連結' });
+  if (ref && !J.isVideoName(ref.originalname)) {
+    for (const f of Object.values(files || {}).flat()) try { unlinkSync(f.path); } catch {}
+    return res.status(400).json({ error: `這看起來不像影片檔，請上傳影片格式（${J.REFERENCE_EXTS.join(' ')}）` });
+  }
   if (!['claude', 'codex'].includes(agent)) return res.status(400).json({ error: 'agent 必須是 claude 或 codex' });
   if (/�/.test(brief + (title || ''))) return res.status(400).json({ error: '需求文字編碼錯誤（請用 UTF-8 送出）' });
   // optional review/fix round limits for this project (castRounds, chunkRounds, finalRounds: whole numbers 1–10)
@@ -41,7 +47,7 @@ app.post('/api/projects', upload.fields([{ name: 'reference', maxCount: 1 }, { n
   try { settings = Object.fromEntries(Object.entries(J.cleanRounds(req.body)).filter(([, v]) => v != null)); }
   catch (e) { for (const f of Object.values(files || {}).flat()) try { unlinkSync(f.path); } catch {} return res.status(400).json({ error: (e as Error).message }); }
   const id = slug();
-  const job = J.createJob({ id, title: (title || brief.split('\n')[0] || '未命名').slice(0, 40), agent, brief, lang, settings,
+  const job = J.createJob({ id, title: J.projectTitle(title, brief, lang), agent, brief, lang, settings,
     reference: ref ? { type: 'file', src: 'inputs/reference' + (extname(ref.originalname) || '.mp4') } : { type: 'url', src: url.trim() } });
   if (ref) renameSync(ref.path, join(J.dirOf(id), job.reference.src));
   for (const f of files?.inputs || []) renameSync(f.path, join(J.dirOf(id), 'inputs', fileName(f)));
@@ -108,6 +114,7 @@ app.post('/api/projects/:id/cancel', (req, res) => { if (guard(res, req.params.i
 app.get('/api/projects/:id/events', (req, res) => {
   const { id } = req.params; if (!guard(res, id)) return;
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.flushHeaders();   // send them now, not with the first event or ping: the browser's 'open' (the UI reloads on it) waits for them
   const send = (jid: string, ev: J.BusEvent) => { if (jid === id) res.write(`data: ${JSON.stringify(ev.type === 'job' ? { type: 'job', stage: ev.job.stage } : ev)}\n\n`); };
   J.bus.on('job', send);
   const ping = setInterval(() => res.write(': ping\n\n'), 20000);
@@ -126,5 +133,15 @@ app.get<'/files/:id/*', { id: string; 0: string }>('/files/:id/*', (req, res) =>
 const dist = join(import.meta.dirname, '..', 'dist');
 if (existsSync(dist)) { app.use(express.static(dist)); app.get(/^\/(?!api|files).*/, (req, res) => res.sendFile(join(dist, 'index.html'))); }
 
-J.recoverOrphans();
-app.listen(PORT, '127.0.0.1', () => console.log(`ReelMimic → http://localhost:${PORT}`));
+// Recover only once the port is ours: a second copy (start.bat double-clicked again) used to mark the first copy's
+// running jobs as interrupted before it found the port taken. Now it just says so and exits.
+const server = app.listen(PORT, '127.0.0.1', () => {
+  console.log(`ReelMimic → http://localhost:${PORT}`);
+  const cut = J.recoverOrphans();
+  if (cut.length && process.env.AUTO_RESUME !== '0') { console.log(`Resuming ${cut.length} interrupted job(s): ${cut.join(', ')}`); J.autoResume(cut); }
+});
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code !== 'EADDRINUSE') throw err;
+  console.error(`Port ${PORT} is already in use. ReelMimic may already be open at http://localhost:${PORT}. Set PORT to use another port.`);
+  process.exit(1);
+});

@@ -2,7 +2,7 @@
 // Plain JavaScript on purpose: it must run (and say "upgrade Node") even on a Node too old to run the TypeScript server.
 // @ts-check
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statfsSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 
@@ -49,6 +49,11 @@ if (pyv) {
   for (const [m, pkg] of mods) probe(m) ? ok(pkg) : bad(pkg, `${PY} -m pip install -r requirements.txt`);
   for (const [m, pkg, why] of optMods) probe(m) ? ok(pkg) : opt(`${pkg} not installed`, why);
 }
+// Renders write frames, previews and the encode next to the projects: a real run got down to 66 MB free mid-production.
+try {
+  const f = statfsSync(join(import.meta.dirname, '..', '..')), gb = (f.bavail * f.bsize) / 2 ** 30;
+  gb >= 5 ? ok(`Disk: ${gb.toFixed(0)} GB free`) : bad(`Disk: only ${gb.toFixed(1)} GB free`, 'free at least 5 GB before making a video (old projects/*/build/out/frames can go)');
+} catch { /* statfs unsupported */ }
 
 console.log('\nAI director (at least one)');
 const claude = run('claude', ['--version']);

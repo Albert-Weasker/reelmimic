@@ -20,6 +20,8 @@ export const api = {
   accept: (id: string) => fetch(`/api/projects/${id}/accept`, { method: 'POST' }).then(j<Ok>),
   resume: (id: string) => fetch(`/api/projects/${id}/resume`, { method: 'POST' }).then(j<Ok>),
   cancel: (id: string) => fetch(`/api/projects/${id}/cancel`, { method: 'POST' }).then(j<Ok>),
-  events: (id: string, fn: (ev: ServerEvent) => void) => { const es = new EventSource(`/api/projects/${id}/events`); es.onmessage = (m: MessageEvent<string>) => fn(JSON.parse(m.data) as ServerEvent); return () => es.close(); },
-  file: (id: string, p: string, bust?: number) => `/files/${id}/${p}${bust ? `?v=${bust}` : ''}`,
+  // onOpen also runs when the browser reconnects on its own (server restart, laptop sleep): events from the gap are not resent
+  events: (id: string, fn: (ev: ServerEvent) => void, onOpen?: () => void) => { const es = new EventSource(`/api/projects/${id}/events`); es.onmessage = (m: MessageEvent<string>) => fn(JSON.parse(m.data) as ServerEvent); if (onOpen) es.onopen = onOpen; return () => es.close(); },
+  // encode each path segment ('#' would start the fragment, '%' makes a malformed URI); agents on Windows may write '\' as separator
+  file: (id: string, p: string, bust?: number) => `/files/${id}/${p.split(/[\\/]/).map(encodeURIComponent).join('/')}${bust ? `?v=${bust}` : ''}`,
 };

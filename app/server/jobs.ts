@@ -8,9 +8,9 @@
 //       → critiquing: final panel (fresh critic: continuity/pacing/seams, verifies earlier fixes) ⇄ revising
 //       → done   (needs_user items never trigger a revise: they pause the job and ask the user)
 // Quality is checked where defects are born (each character, each chunk), not only at the end.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, cpSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, statfsSync, cpSync } from 'node:fs';
+import { extname, join, relative, resolve } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { runAgent, type AgentResult } from './agents/index.ts';
 import { prompts as bootPrompts } from './prompts.ts';
@@ -41,6 +41,11 @@ export const CONFIG: Config = {
   chunkRounds: +(process.env.CHUNK_ROUNDS || 3),   // shot line: review/fix rounds per chunk
   finalRounds: +(process.env.FINAL_ROUNDS || 2),   // final panel: automatic revise rounds
   maxAgentsGlobal: +(process.env.MAX_AGENTS || 12), // all projects together (CLI rate limits, CPU/GPU for renders)
+  maxReviews: +(process.env.MAX_REVIEWS || 4),      // shot reviews at once per project: each one opens Chrome to grab frames;
+                                                    // 13 at once meant 80–200 Chrome processes and screenshot timeouts
+  // Build shots while the cast gate is still running? Faster, but on real runs character files changed under the
+  // builders and every segment needed an extra round (0nczg, 4f1jx, 1qo20, 7e45u). Off by default: quality first.
+  overlapCast: process.env.OVERLAP_CAST === '1',
 };
 
 // Review/fix round limits: CONFIG holds the defaults; a project can set its own (job.settings), read at every check so a
@@ -65,12 +70,15 @@ export function setRounds(id: string, input: Record<string, unknown>) {
   update(id, (x) => { const s = { ...(x.settings || {}) }; for (const [k, v] of Object.entries(clean) as [RoundKey, number | null][]) { if (v == null) delete s[k]; else s[k] = v; } x.settings = s; });
   return snapshot(id);
 }
+// Uploaded references only need to look like a video (by extension); URL references are left to yt-dlp.
+export const REFERENCE_EXTS = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.mpg', '.mpeg'];
+export const isVideoName = (name: string) => REFERENCE_EXTS.includes(extname(name).toLowerCase());
 
 export type BusEvent = { type: 'job'; job: Job } | { type: 'log'; ev: LogEvent };
 export const bus = new EventEmitter<{ job: [id: string, ev: BusEvent] }>(); bus.setMaxListeners(100);
 const running = new Map<string, Set<AbortController>>();
 // Stop every agent this server started (on shutdown), so none keeps working unseen after a restart.
-export function stopAll() { for (const set of running.values()) for (const ac of set) ac.abort(); }
+export function stopAll() { for (const set of running.values()) for (const ac of set) ac.abort(); for (const set of prerenderProcs.values()) for (const p of set) p.kill(); }
 
 const now = () => new Date().toISOString();
 export const dirOf = (id: string) => join(PROJECTS, id);
@@ -88,14 +96,26 @@ function log(id: string, ev: LogEntry) {
 }
 
 // On startup nothing is running, so a job still marked as working was cut off by a restart: say so instead of pretending.
-export function recoverOrphans() {
+export function recoverOrphans(): string[] {
+  const cut: string[] = [];
   const WORK = ['analyzing', 'styling', 'planning', 'replanning', 'producing', 'revising', 'critiquing'];
   for (const d of existsSync(PROJECTS) ? readdirSync(PROJECTS) : []) {
     if (!existsSync(jpath(d))) continue;
     const j = load(d);
     if (!WORK.includes(j.stage)) continue;
+    cut.push(d);
     update(d, (x) => { x.failed = x.stage; x.stage = 'error'; x.error = L(d, '伺服器重新啟動，這一輪被中斷了（它可能已經改了部分檔案）。按「重試這一步」從目前的檔案繼續。', 'The server restarted and this turn was cut off (it may have changed some files). Click “Retry this step” to continue from the current files.'); x.chat.push({ role: 'system', text: L(d, '這一輪因為伺服器重新啟動而中斷。', 'This turn was cut off by a server restart.'), ts: now() }); });
   }
+  return cut;
+}
+// After a restart, pick the interrupted jobs up again on their own (one real run sat cut off for 11.5 hours overnight).
+// Staggered so they don't all launch agents at once. AUTO_RESUME=0 turns it off.
+export function autoResume(ids: string[], gapMs = 5000) {
+  ids.forEach((id, i) => setTimeout(() => {
+    if (load(id).stage !== 'error') return;   // the user already did something with it
+    chat(id, 'system', L(id, '伺服器重新啟動後自動接續這一步。', 'Resuming this step automatically after the server restart.'));
+    retry(id).catch((e) => console.error('auto-resume', id, e));
+  }, (i + 1) * gapMs));
 }
 const readJSON = <T>(p: string): T | null => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
 const readText = (p: string): string | null => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
@@ -139,6 +159,13 @@ export function snapshot(id: string): Snapshot {
     rounds: { values: rounds(id), defaults: Object.fromEntries(ROUND_KEYS.map((k) => [k, CONFIG[k]])) as Rounds, ...ROUND_RANGE },
     inputs: list('inputs', /./),
   };
+}
+
+// Project name: the given title, else the brief's first non-empty line, else a placeholder in the project's language.
+// Cut by characters, not UTF-16 units, so an emoji at the limit isn't split in half.
+export function projectTitle(title: string | undefined, brief: string, lang: Lang) {
+  const name = (title || '').trim() || brief.split('\n').map((l) => l.trim()).find(Boolean) || (lang === 'en' ? 'Untitled' : '未命名');
+  return Array.from(name).slice(0, 40).join('');
 }
 
 export function createJob({ id, title, agent, brief, reference, lang = 'zh-TW', settings = {} }: { id: string; title: string; agent: AgentKind; brief: string; reference: Reference; lang?: Lang; settings?: Partial<Rounds> }) {
@@ -307,10 +334,21 @@ function collectNeeds(id: string, items: NeedRequest[] | undefined, from: string
   return add.length;
 }
 
+// Renders need room (frames, previews, the encode): warn early instead of failing mid-render. A real run had 66 MB left.
+const MIN_FREE_GB = 5;
+function diskWarning(id: string) {
+  try {
+    const f = statfsSync(PROJECTS), gb = (f.bavail * f.bsize) / 2 ** 30;
+    if (gb < MIN_FREE_GB) chat(id, 'system', L(id, `⚠️ 磁碟只剩 ${gb.toFixed(1)} GB，渲染可能中途失敗；建議先清出 ${MIN_FREE_GB} GB 以上。`, `⚠️ Only ${gb.toFixed(1)} GB of disk left; rendering may fail midway. Free at least ${MIN_FREE_GB} GB first.`));
+  } catch { /* statfs unsupported: skip */ }
+}
+
 // ---------- pre-production ----------
+const STYLE_OUT = ['analysis/STYLE.md', 'analysis/route.json', 'analysis/peaks.json'];   // peaks: the reference's goosebump moments
 export async function start(id: string) {
+  diskWarning(id);
   if (!(await analyze(id))) return;
-  if (!(await step(id, 'styling', 'style', {}, ['analysis/STYLE.md', 'analysis/route.json'], 'styled'))) return;
+  if (!(await step(id, 'styling', 'style', {}, STYLE_OUT, 'styled'))) return;
   await preProduction(id);
 }
 
@@ -375,7 +413,8 @@ export async function message(id: string, text: string, meta: MessageMeta = {}) 
 async function productionNote(id: string, msg: string) {
   const j = load(id), d = dirOf(id), ph = j.pipeline?.phase;
   update(id, (x) => { x.needs = []; x.error = null; x.failed = null; });
-  if (ph === 'cast' || (j.pipeline?.cast && !j.pipeline.cast.pass)) {
+  const cast = (readJSON<Production>(join(d, 'build', 'production.json'))?.characters || []).length > 0;
+  if (cast && (ph === 'cast' || (j.pipeline?.cast && !j.pipeline.cast.pass))) {
     const rv = readJSON<Review>(join(d, 'out', 'check', 'cast', 'review.json')) || {};
     pipe(id, (p) => { p.cast = { round: 0, pass: false, ...p.cast, state: 'fixing' }; });
     if (!(await step(id, 'producing', 'cast_fix', { issues: rv.issues || [], round: 'user', message: msg }, ['out/check/cast/sheet.jpg', 'out/check/cast/fixes.json']))) return;
@@ -403,7 +442,8 @@ export async function approve(id: string) {
   const open = openInputs(id);
   if (open.length) throw Object.assign(new Error('還有需要你提供或略過的素材：' + open.map((r) => r.label || r.id).join('、')), { code: 409 });
   await alignIfReady(id).catch(() => null);   // lyrics pasted before the music arrived: time them now, before anything is built
-  update(id, (j) => { j.approvedAt = now(); j.approvedPlanVersion = readJSON<Plan>(join(dirOf(id), 'plan.json'))?.version; j.engineSnapshot = snapshotEngine(id); j.pipeline = {}; j.sessions = j.approvedAtPrev ? {} : Object.fromEntries(Object.entries(j.sessions || {}).filter(([k]) => k.startsWith('cast-'))); j.approvedAtPrev = true; j.needs = []; j.userNote = null; });
+  update(id, (j) => { j.approvedAt = now(); j.approvedPlanVersion = readJSON<Plan>(join(dirOf(id), 'plan.json'))?.version; j.engineSnapshot = snapshotEngine(id); j.pipeline = {}; j.sessions = j.approvedAtPrev ? {} : Object.fromEntries(Object.entries(j.sessions || {}).filter(([k]) => k.startsWith('cast-'))); j.approvedAtPrev = true; j.needs = []; j.userNote = null; j.critiqueRounds = 0; });
+  diskWarning(id);
   chat(id, 'system', L(id, `企劃已核准，開始生產：角色關 → 分段製作（每段做完立刻審）→ 組裝 → 最後評審`, 'Plan approved. Production: characters → parts built and reviewed as they finish → assembly → final review'));
   if (await production(id, { fresh: true })) await finalPanel(id);
 }
@@ -411,15 +451,19 @@ export async function approve(id: string) {
 // ---------- production: gates where defects are born ----------
 async function production(id: string, { fresh = false } = {}): Promise<boolean> {
   const d = dirOf(id), prev: Pipeline = fresh ? {} : load(id).pipeline || {};
-  const hasSetup = !fresh && existsSync(join(d, 'build', 'production.json')) && existsSync(join(d, 'out', 'check', 'cast', 'sheet.jpg'));
+  // a piece with no characters (typography, motion graphics) has no cast sheet to make
+  const sheet = (readJSON<Plan>(join(d, 'plan.json'))?.characters || []).length ? ['out/check/cast/sheet.jpg'] : [];
+  const hasSetup = !fresh && [join('build', 'production.json'), ...sheet].every((f) => existsSync(join(d, f)));
   // 1) director: scaffold, shared assets, cast sheets, chunk plan (skipped when resuming)
   if (!hasSetup) {
     pipe(id, (p) => { p.phase = 'setup'; });
-    if (!(await step(id, 'producing', 'setup', {}, ['build/production.json', 'out/check/cast/sheet.jpg']))) return false;
+    if (!(await step(id, 'producing', 'setup', {}, ['build/production.json', ...sheet]))) return false;
   } else setStage(id, 'producing', { error: null, failed: null });
   // 2) cast gate and 3) shot building run at the same time: shots only call the shared character definitions, so cast fixes
   //    flow into them automatically. Shot REVIEWS wait until the cast has passed, and re-grab fresh frames first.
+  prerenderStopped.delete(id);   // a fresh or resumed production may render in the background again
   const castP = castGate(id, prev);
+  if (!CONFIG.overlapCast && !(await castP)) return false;   // characters are final before any shot is built
   const prod = readJSON<Production>(join(d, 'build', 'production.json')) || {};
   const chunks = prod.chunks || [];
   const old = prev.chunks || {};
@@ -434,7 +478,7 @@ async function production(id: string, { fresh = false } = {}): Promise<boolean> 
     const reviews: Record<string, Promise<boolean>> = {}, results: Record<string, { entry: ShotEntry; needs: NeedRequest[]; verified: unknown[] }> = {};
     const reviewShot = (sid: string, round: number) => (reviews[sid] = (async () => {
       if (!(await castP)) return false;
-      const r = await turn(id, 'shot_qa', { chunk: c, shots: [sid], round, out: `out/check/shots/${sid}.review.json` }, [`out/check/shots/${sid}.review.json`], { session: 'fresh', who: `shot-qa-${sid}` });
+      const r = await reviewSlot(id, () => turn(id, 'shot_qa', { chunk: c, shots: [sid], round, out: `out/check/shots/${sid}.review.json` }, [`out/check/shots/${sid}.review.json`], { session: 'fresh', who: `shot-qa-${sid}` }));
       if (!r.ok) return false;
       const rv = readJSON<ChunkReview>(shotFile(sid, 'review')) || {};
       results[sid] = { entry: (rv.shots || []).find((x) => x.id === sid) || { id: sid, pass: !!rv.pass, issues: rv.issues || [] }, needs: rv.needs_user || [], verified: rv.verified_fixes || [] };
@@ -474,8 +518,10 @@ async function production(id: string, { fresh = false } = {}): Promise<boolean> 
       const needs = c.shots.flatMap((x) => results[x]?.needs || []);
       if (collectNeeds(id, needs, `shot-qa-${c.id}`)) { set({ state: 'needs_user' }); return false; }
       const bad = c.shots.map((x) => results[x]?.entry).filter((e): e is ShotEntry => !!e && !shotPassed(e));
-      if (!bad.length) { set({ state: 'passed' }); return true; }
-      if (round >= rounds(id).chunkRounds) { set({ state: 'failed', open: bad.length }); return false; }
+      if (!bad.length) { set({ state: 'passed' }); prerender(id, c); return true; }
+      // one blocker left at the limit: one more round instead of pausing (a real run sat 23 minutes waiting to say "fix it")
+      const left = bad.flatMap((e) => e.issues || []).filter((x) => x.severity !== 'polish').length;
+      if (round >= rounds(id).chunkRounds + (left <= 1 ? 1 : 0)) { set({ state: 'failed', open: bad.length }); return false; }
       set({ state: 'fixing' });
       const f = await turn(id, 'fix_chunk', { chunk: c, bad, round, message: load(id).userNote }, [`out/check/shots/${c.id}.fixes.json`], { session: key, who: key });
       if (!f.ok) { set({ state: 'error' }); return false; }
@@ -508,8 +554,9 @@ async function production(id: string, { fresh = false } = {}): Promise<boolean> 
   if ((j.needs || []).length) return pause(id);
   const failed = Object.entries(j.pipeline.chunks || {}).filter(([, v]) => v.state !== 'passed');
   if (failed.length) { chat(id, 'system', L(id, `有 ${failed.length} 段沒通過鏡頭審查：${failed.map(([k, v]) => `${k}(${v.state})`).join('、')}，請你看這幾段決定`, `${failed.length} part${failed.length > 1 ? 's' : ''} didn't pass shot review: ${failed.map(([k, v]) => `${k} (${v.state})`).join(', ')}. Please take a look and decide`)); setStage(id, 'needs_input'); return false; }
-  // 4) assemble
+  // 4) assemble (after the background renders of passed segments, so their frames are reused, not redrawn)
   pipe(id, (p) => { p.phase = 'assemble'; });
+  await waitPrerenders(id);
   return step(id, 'producing', 'assemble', {}, ['out/video.mp4'], 'done');
 }
 // ---------- cast gate ----------
@@ -522,6 +569,7 @@ async function castGate(id: string, prev: Pipeline): Promise<boolean> {
   const files = new Set(chars.map((c) => c.file));
   const parallel = chars.length > 1 && files.size === chars.length && chars.every((c) => existsSync(join(d, c.sheet)));
   if (prev.cast?.pass) return true;
+  if (!(prod.characters || []).length) { pipe(id, (p) => { p.cast = { round: 0, pass: true, state: 'passed' }; }); return true; }   // no cast: nothing to review
   if (!parallel) return castSerial(id, prev);
   const setC = (cid: string, v: Partial<CastCharProgress>) => pipe(id, (p) => { const cast = p.cast!; cast.chars = cast.chars || {}; cast.chars[cid] = { ...(cast.chars[cid] ?? { state: 'queued', round: 0 }), ...v }; });
   const keep: Record<string, CastCharProgress> = prev.cast?.mode === 'parallel' ? prev.cast.chars || {} : {};   // resuming: characters that already passed stay passed
@@ -592,6 +640,58 @@ async function castSerial(id: string, prev: Pipeline, firstReview?: Review | nul
   return true;
 }
 
+// ---------- background render of passed segments ----------
+// Engines with a frame cache (render.mjs --frames) declare production.json "prerender": { cwd, cmd with {start} {end} }.
+// When a segment passes review its final frames are rendered in the background, one segment at a time per project (they
+// share out/frames/manifest.json), so assembly only redraws what changed afterwards. A real run spent 29 minutes
+// re-rendering all 732 frames at assembly.
+const prerenderQ = new Map<string, Promise<void>>(), prerenderProcs = new Map<string, Set<ChildProcess>>();
+const PRERENDER_MAX_MS = (seconds: number) => Math.max(10 * 60e3, seconds * 24 * 6e3);   // ~6 s a frame at worst, never under 10 min
+const ASSEMBLY_WAIT_MS = +(process.env.PRERENDER_WAIT_MS || 10 * 60e3);   // assembly waits this long for background renders, then stops them and renders what's missing itself
+// Projects whose background renders were stopped: renders already queued behind the stopped one must not start later
+// and write out/frames while assembly renders there too. Cleared when production (re)starts.
+const prerenderStopped = new Set<string>();
+function stopPrerenders(id: string) { prerenderStopped.add(id); for (const p of prerenderProcs.get(id) || []) p.kill(); prerenderQ.delete(id); }
+export async function waitPrerenders(id: string, maxMs = ASSEMBLY_WAIT_MS) {
+  const q = prerenderQ.get(id); if (!q) return;
+  let timer: NodeJS.Timeout | undefined;
+  const late = await Promise.race([q.then(() => false), new Promise<boolean>((r) => { timer = setTimeout(() => r(true), maxMs); })]);
+  clearTimeout(timer);
+  if (late) { log(id, { type: 'error', text: `背景渲染超過 ${Math.round(maxMs / 60e3)} 分鐘，先停掉，組裝時補渲` }); stopPrerenders(id); }
+}
+function prerender(id: string, c: Chunk) {
+  const d = dirOf(id), pr = (readJSON<Production>(join(d, 'build', 'production.json')) || {}).prerender as { cwd?: string; cmd?: string; args?: string[] } | undefined;
+  if (!pr?.cmd && !pr?.args?.length) return;
+  type S = { id?: string; start_s?: number; end_s?: number };
+  const mine = ((readJSON<Plan>(join(d, 'plan.json'))?.shots || []) as S[]).filter((s) => s.id && c.shots.includes(s.id) && s.start_s != null && s.end_s != null);
+  if (!mine.length) return;
+  const a = Math.min(...mine.map((s) => s.start_s!)), b = Math.max(...mine.map((s) => s.end_s!));
+  // "args": ["node", "render.mjs", …] keeps arguments with spaces intact; "cmd" is split on whitespace
+  const fill = (x: string) => x.replace('{start}', a.toFixed(3)).replace('{end}', b.toFixed(3));
+  const [bin, ...args] = pr.args?.length ? pr.args.map(fill) : fill(pr.cmd!).split(/\s+/);
+  const run = () => new Promise<void>((resolve) => {
+    if (prerenderStopped.has(id) || load(id).stage === 'error') return resolve();   // stopped, cancelled or failed meanwhile
+    log(id, { type: 'tool', name: 'prerender', detail: `${c.id} ${a.toFixed(2)}–${b.toFixed(2)} s: ${bin} ${args.join(' ')}` });
+    const t0 = Date.now(), p = spawn(bin, args, { cwd: join(d, pr.cwd || 'build'), env: process.env, stdio: 'ignore' });
+    const set = prerenderProcs.get(id) || new Set(); set.add(p); prerenderProcs.set(id, set);
+    // a render that never exits must not hold the queue (seen: one sat 7 hours after finishing its frames)
+    const timer = setTimeout(() => p.kill(), PRERENDER_MAX_MS(b - a)); timer.unref();
+    let ended = false;
+    const done = (ok: boolean) => { if (ended) return; ended = true; clearTimeout(timer); set.delete(p); log(id, { type: ok ? 'text' : 'error', text: `背景渲染 ${c.id}：${ok ? `完成（${Math.round((Date.now() - t0) / 1000)} s）` : '失敗（組裝時會重渲）'}` }); resolve(); };
+    p.on('error', () => done(false)); p.on('close', (code) => done(code === 0));
+  });
+  prerenderQ.set(id, (prerenderQ.get(id) || Promise.resolve()).then(run));
+}
+
+// at most CONFIG.maxReviews shot reviews of one project at a time (each grabs frames in Chrome)
+const reviewQ = new Map<string, { n: number; wait: (() => void)[] }>();
+async function reviewSlot<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const q = reviewQ.get(id) || { n: 0, wait: [] }; reviewQ.set(id, q);
+  if (q.n >= CONFIG.maxReviews) await new Promise<void>((r) => q.wait.push(r));   // woken with the slot already counted
+  else q.n++;
+  try { return await fn(); } finally { const next = q.wait.shift(); if (next) next(); else q.n--; }
+}
+
 const sharedLocks = new Map<string, Promise<unknown>>();   // per project: one director edits shared files at a time
 function sharedLock<T>(key: string, fn: () => Promise<T>): Promise<T> { const prev = sharedLocks.get(key) || Promise.resolve(); const next = prev.then(fn, fn); sharedLocks.set(key, next.catch(() => {})); return next; }
 
@@ -600,17 +700,26 @@ function pause(id: string) { setStage(id, 'needs_input'); return false; }
 // ---------- final panel: seams, continuity, pacing; verifies every earlier fix ----------
 async function finalPanel(id: string) {
   const d = dirOf(id);
+  let prevMust = Infinity;
   for (let round = 1; ; round++) {
     pipe(id, (p) => { p.phase = 'final'; p.final = { round }; });
     if (!(await step(id, 'critiquing', 'critique', { round }, ['out/check/critique.json'], null, { session: 'fresh', who: 'critic' }))) return;
     const c = readJSON<Critique>(join(d, 'out', 'check', 'critique.json')) || {};
     const must = (c.must_fix || []).filter(Boolean);
-    update(id, (j) => { j.critiqueRounds = round; j.lastCritique = { pass: !must.length, must: must.length, at: now() }; });
+    // a climax that loses to the reference never passes, even if the critic forgot to list a fix for it
+    for (const pk of (c.peaks || []).filter((x) => x?.verdict === 'ref_better'))
+      if (!must.some((m) => m.issue.includes(pk.id))) must.push({ shot: pk.id, time: pk.ours?.[0], issue: `高潮 ${pk.id} 輸給參考片：${pk.why || ''}`, fix: `照 ${pk.strip || '高潮對照圖'} 逐格補上參考片爆點的手法，直到不輸參考片` });
+    const total = (load(id).critiqueRounds || 0) + 1;   // every critic pass since approval (retries and user revisions included)
+    update(id, (j) => { j.critiqueRounds = total; j.lastCritique = { pass: !must.length, must: must.length, at: now() }; });
     const needs = collectNeeds(id, c.needs_user, 'critic');
-    if (!must.length) { chat(id, 'system', needs ? L(id, '評審：導演能修的都過了，剩下需要你提供的項目', 'Final review: everything the director can fix is done. What is left needs your input') : L(id, `評審通過（第 ${round} 輪）`, `Final review passed (round ${round})`)); setStage(id, needs ? 'needs_input' : 'done'); return; }
-    if (round > rounds(id).finalRounds) { chat(id, 'system', L(id, `評審仍有 ${must.length} 項必修，已達自動修改上限，請你決定`, `The final review still has ${must.length} must-fix item${must.length > 1 ? 's' : ''} and the automatic fix limit is reached. Please decide`)); setStage(id, 'done'); return; }
+    if (!must.length) { chat(id, 'system', needs ? L(id, '評審：導演能修的都過了，剩下需要你提供的項目', 'Final review: everything the director can fix is done. What is left needs your input') : L(id, `評審通過（第 ${total} 輪）`, `Final review passed (round ${total})`)); setStage(id, needs ? 'needs_input' : 'done'); return; }
+    // Past the limit, keep going while the list is short (≤ 2) and still shrinking, up to 3 extra rounds: a real run went
+    // 8 → 3 → 2 → 1 and stopped with its last, most visible defect unfixed. A list that stops shrinking stops the loop.
+    const converging = must.length <= 2 && must.length < prevMust && round <= rounds(id).finalRounds + 3;
+    prevMust = must.length;
+    if (round > rounds(id).finalRounds && !converging) { chat(id, 'system', L(id, `評審仍有 ${must.length} 項必修，已達自動修改上限，請你決定`, `The final review still has ${must.length} must-fix item${must.length > 1 ? 's' : ''} and the automatic fix limit is reached. Please decide`)); setStage(id, 'done'); return; }
     const msg = must.map((m, i) => `${i + 1}. [${m.shot || '全片'}${m.time != null ? ' ' + m.time + 's' : ''}] ${m.issue}${m.fix ? ' → 建議：' + m.fix : ''}`).join('\n');
-    chat(id, 'system', L(id, `評審第 ${round} 輪：${must.length} 項必修，交回導演（每項要附修改前後對照）`, `Final review round ${round}: ${must.length} must-fix item${must.length > 1 ? 's' : ''}, sent back to the director (each fix needs before/after proof)`));
+    chat(id, 'system', L(id, `評審第 ${total} 輪：${must.length} 項必修，交回導演（每項要附修改前後對照）`, `Final review round ${total}: ${must.length} must-fix item${must.length > 1 ? 's' : ''}, sent back to the director (each fix needs before/after proof)`));
     if (!(await step(id, 'revising', 'revise', { message: msg, round }, ['out/video.mp4', 'out/check/fixes.json']))) return;
   }
 }
@@ -619,7 +728,7 @@ export async function retry(id: string) {
   const j = load(id), f = j.failed;
   update(id, (x) => { x.retryPending = true; });
   if (f === 'analyzing') return start(id);
-  if (f === 'styling') { if (await step(id, 'styling', 'style', {}, ['analysis/STYLE.md', 'analysis/route.json'], 'styled')) await preProduction(id); return; }
+  if (f === 'styling') { if (await step(id, 'styling', 'style', {}, STYLE_OUT, 'styled')) await preProduction(id); return; }
   if (f === 'planning') return preProduction(id);
   if (f === 'replanning') return step(id, 'replanning', 'replan', { message: [...j.chat].reverse().find((c) => c.role === 'user')?.text || '請重新整理企劃' }, ['plan.json'], 'plan_review');
   if (f === 'producing' || j.stage === 'needs_input') { if (await production(id)) await finalPanel(id); return; }
@@ -640,5 +749,5 @@ export async function accept(id: string) {
   if (await production(id)) await finalPanel(id);
 }
 
-export function cancel(id: string) { for (const ac of running.get(id) || []) ac.abort(); }
+export function cancel(id: string) { for (const ac of running.get(id) || []) ac.abort(); stopPrerenders(id); }
 export async function critique(id: string) { return finalPanel(id); }

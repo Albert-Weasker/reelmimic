@@ -77,7 +77,7 @@ function Home({ agents }: { agents?: Partial<AgentStatus> }) {
         <div className="section-title"><h2>專案</h2><span className="small faint">{list.length}</span></div>
         <div className="plist">{list.map((p, i) => (
           <a key={p.id} className="pcard fade-in" onMouseEnter={(e) => { const v = e.currentTarget.querySelector('video'); if (v) { v.currentTime = 3; v.play().catch(() => {}); } }} onMouseLeave={(e) => e.currentTarget.querySelector('video')?.pause()} style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }} href={`#/p/${p.id}`}>
-            <div className="th" style={{ backgroundImage: p.thumb ? `url(${api.file(p.id, p.thumb)})` : undefined }}>{p.stage === 'done' && <video muted loop playsInline preload="none" src={api.file(p.id, 'out/video.mp4')} onError={(e) => e.currentTarget.remove()} />}<Status stage={p.stage} /></div>
+            <div className="th" style={{ backgroundImage: p.thumb ? `url("${api.file(p.id, p.thumb)}")` : undefined }}>{p.stage === 'done' && <video muted loop playsInline preload="none" src={api.file(p.id, 'out/video.mp4')} onError={(e) => e.currentTarget.remove()} />}<Status stage={p.stage} /></div>
             <div className="meta"><b>{p.title}</b><div className="small faint" style={{ marginTop: 2 }}>{p.agent === 'codex' ? 'Codex' : 'Claude Code'} · {ago(p.updatedAt)}{p.needs ? ` · ${p.needs} 項待你提供` : ''}</div></div>
           </a>))}</div>
       </section>}

@@ -53,7 +53,7 @@ function lines(stream: Readable, onLine: (l: string) => void) {
   stream.on('end', () => { if (buf.trim()) onLine(buf.trim()); });
 }
 
-const short = (v: unknown, n = 160) => { const s = typeof v === 'string' ? v : JSON.stringify(v); return s.length > n ? s.slice(0, n) + '…' : s; };
+const short = (v: unknown, n = 400) => { const s = typeof v === 'string' ? v : JSON.stringify(v); return s.length > n ? s.slice(0, n) + '…' : s; };
 
 function claudeArgs(sessionId?: string | null) {
   const a = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', CLAUDE_TOOLS];
