@@ -93,7 +93,8 @@ export function Project({ id }: { id: string }) {
 
 function LiveBanner({ id, job }: { id: string; job: Job }) {
   const now = useNow(true);
-  const { live } = useMemo(() => buildThread(job), [job.log?.length, job.stage]);
+  // the server keeps the latest 600 log entries, so the length stops changing: key on the last entry
+  const { live } = useMemo(() => buildThread(job), [job.log?.[job.log.length - 1]?.ts, job.stage]);
   const since = live.length ? Math.min(...live.map((b) => new Date(b.start).getTime())) : new Date(job.updatedAt!).getTime();
   const detail = job.stage === 'producing' || job.stage === 'critiquing' || job.stage === 'revising' ? PIPE_DO[job.pipeline?.phase ?? ''] : null;
   return (
