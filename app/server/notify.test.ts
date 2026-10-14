@@ -21,6 +21,7 @@ const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
 
 const TMP = mkdtempSync(join(tmpdir(), 'reelmimic-notify-'));
 Object.assign(process.env, { REELMIMIC_PROJECTS: TMP, DISCORD_WEBHOOK_URL: `${base}/discord`, WEBHOOK_URL: `${base}/hook`, REELMIMIC_URL: 'https://studio.example/' });
+for (const k of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_API']) delete process.env[k];   // a token in your shell must not get test messages
 const J = await import('./jobs.ts');
 const N = await import('./notify.ts');
 

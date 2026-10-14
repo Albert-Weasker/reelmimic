@@ -128,5 +128,5 @@ const dist = join(import.meta.dirname, '..', 'dist');
 if (existsSync(dist)) { app.use(express.static(dist)); app.get(/^\/(?!api|files).*/, (req, res) => res.sendFile(join(dist, 'index.html'))); }
 
 J.recoverOrphans();
-if (startNotifier()) console.log('Notifications on (Discord / webhook)');
+if (startNotifier()) console.log('Notifications on');
 app.listen(PORT, '127.0.0.1', () => console.log(`ReelMimic → http://localhost:${PORT}`));
