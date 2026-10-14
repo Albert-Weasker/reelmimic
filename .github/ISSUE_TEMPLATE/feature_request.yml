@@ -1,5 +1,6 @@
 name: Feature request
 description: An idea that would make ReelMimic better
+labels: [enhancement]
 body:
   - type: textarea
     id: what-i-would-like

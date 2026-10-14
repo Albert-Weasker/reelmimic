@@ -1,5 +1,6 @@
 name: Bug report
 description: Something broke or behaves unexpectedly
+labels: [bug]
 body:
   - type: markdown
     attributes:
@@ -14,9 +15,9 @@ body:
     validations:
       required: true
   - type: textarea
-    id: why
+    id: expected
     attributes:
-      label: Why
+      label: Expected
       description: What you expected instead, and why it matters.
     validations:
       required: true
@@ -43,6 +44,13 @@ body:
     attributes:
       label: Platform
       description: OS and version (e.g. Windows 11, macOS 15, Ubuntu 24.04)
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent
+      description: Claude Code or Codex, and its version (`claude --version` / `codex --version`)
     validations:
       required: true
   - type: input
