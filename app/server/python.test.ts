@@ -29,6 +29,6 @@ describe('Python missing', () => {
     writeFileSync(join(J.dirOf(id), 'inputs', 'song.mp3'), '');
     const r = await J.saveLyrics(id, '第一句\n第二句');
     assert.deepEqual({ ok: r.ok, aligned: r.aligned }, { ok: false, aligned: false });
-    assert.ok(J.load(id).log?.some((e) => e.type === 'error' && /could not be started/.test(e.text || '')));
+    assert.ok(J.snapshot(id).job.log.some((e) => e.type === 'error' && /could not be started/.test(e.text || '')));   // the log lives in events.jsonl, not job.json
   });
 });

@@ -155,6 +155,7 @@ unless you pass `--title`, and a rerun of the same video won't post it twice.
 - [Extending](docs/EXTENDING.md): adding styles, rendering engines, or another AI
 - [LINE bot](docs/LINE.md): check progress and get notified from LINE
 - [Contributing](CONTRIBUTING.md)
+- [Troubleshooting](TROUBLESHOOTING.md): the setup problems the doctor detects, and their fixes
 
 ## Ground rules
 

@@ -2,7 +2,7 @@
 // Runs against a throwaway projects folder (REELMIMIC_PROJECTS), never the real one. No agent is started.
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -142,5 +142,37 @@ describe('project list', () => {
     assert.ok(list.length >= 5);
     const times = list.map((p) => p.updatedAt || '');
     assert.deepEqual(times, [...times].sort().reverse());
+  });
+});
+
+const S = await import('./store.ts');
+describe('event log', () => {
+  test('an event goes to events.jsonl and the snapshot, without rewriting job.json', () => {
+    const { id } = newJob();
+    const before = readFileSync(join(J.dirOf(id), 'job.json'), 'utf8');
+    S.log(id, { type: 'text', text: 'hello' });
+    assert.equal(readFileSync(join(J.dirOf(id), 'job.json'), 'utf8'), before);
+    assert.equal(J.snapshot(id).job.log.at(-1)?.type, 'text');
+    assert.match(readFileSync(join(J.dirOf(id), 'logs', 'events.jsonl'), 'utf8'), /hello/);
+    assert.ok(!('log' in JSON.parse(before)));
+  });
+  test('after a restart the latest 600 come back from the tail of events.jsonl', () => {
+    const id = 'restart-log', d = J.dirOf(id);
+    mkdirSync(join(d, 'logs'), { recursive: true });
+    writeFileSync(join(d, 'job.json'), JSON.stringify({ id, title: 't', agent: 'claude', stage: 'done', chat: [], needs: [], pipeline: {} }));
+    writeFileSync(join(d, 'logs', 'events.jsonl'), Array.from({ length: 700 }, (_, i) => JSON.stringify({ ts: 't', type: 'text', text: `e${i}` })).join('\n') + '\n');
+    const log = J.snapshot(id).job.log as { text?: string }[];
+    assert.equal(log.length, 600);
+    assert.equal(log[0].text, 'e100');
+    assert.equal(log.at(-1)!.text, 'e699');
+  });
+  test('a project from before events.jsonl keeps its log: moved out of job.json on first write', () => {
+    const id = 'old-log', d = J.dirOf(id);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'job.json'), JSON.stringify({ id, title: 't', agent: 'claude', stage: 'done', chat: [], needs: [], pipeline: {}, log: [{ ts: 't', type: 'text', text: 'old' }] }));
+    J.waive(id, 'x');   // any write
+    assert.ok(!('log' in JSON.parse(readFileSync(join(d, 'job.json'), 'utf8'))));
+    assert.match(readFileSync(join(d, 'logs', 'events.jsonl'), 'utf8'), /"old"/);
+    assert.equal((J.snapshot(id).job.log[0] as { text?: string }).text, 'old');
   });
 });
