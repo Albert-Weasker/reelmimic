@@ -27,7 +27,7 @@ const guard = (res: Response, id: string) => { if (!/^[\w-]+$/.test(id) || !exis
 // Answers as soon as the server is listening: start.bat / start.sh poll it before opening the browser
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 const agents = createAgentCache();
-app.get('/api/agents', (req, res) => res.json(agents()));
+app.get('/api/agents', async (req, res) => { res.json(await agents(req.query.refresh === '1')); });
 app.get('/api/projects', (req, res) => res.json(J.listJobs()));
 
 // New project: a reference (file upload or URL) + brief + agent, optional music / assets / lyrics files.

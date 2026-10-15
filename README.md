@@ -131,6 +131,7 @@ committed. See [`secrets.example.json`](secrets.example.json) for the format.
 | `CODEX_SANDBOX` | Codex sandbox mode (default `danger-full-access`, like Claude Code with Bash allowed; `workspace-write` blocks the Chrome renderer) |
 | `BUILDERS`, `MAX_AGENTS` | How many agents work on one video at once (default 6), and the limit across all projects (default 12) |
 | `PORT` | Web port (default 4318) |
+| `AGENTS_TTL_MS` | How long the detected Claude Code / Codex list is reused (default 300000 = 5 min; a missing agent is re-checked every 30 s; `0` re-checks on every request). Click the agent pill in the header to re-check now. A CLI installed into a new PATH folder still needs a server restart |
 | `REELMIMIC_SECRETS` | Path to a different secrets file (legacy: `CLONE_STUDIO_SECRETS`) |
 | `UPLOAD_POST_KEY`, `UPLOAD_POST_USER` | Optional. Post a finished video to TikTok, Instagram, YouTube and others with `npm run post-video` (see below); `UPLOAD_POST_API` overrides the API address |
 
