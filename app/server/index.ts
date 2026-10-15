@@ -5,8 +5,7 @@ import express, { type Request, type Response } from 'express';
 import multer from 'multer';
 import { existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
-import type { AgentStatus } from '../shared/types.ts';
-import { agentStatus } from './agents/index.ts';
+import { createAgentCache } from './agents-cache.ts';
 import * as J from './jobs.ts';
 // Ctrl+C / kill: stop the agents first (the next start marks their turns interrupted, and Retry resumes them)
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { J.stopAll(); setTimeout(() => process.exit(0), 800); });
@@ -27,8 +26,8 @@ const guard = (res: Response, id: string) => { if (!/^[\w-]+$/.test(id) || !exis
 
 // Answers as soon as the server is listening: start.bat / start.sh poll it before opening the browser
 app.get('/api/health', (req, res) => res.json({ ok: true }));
-let AGENTS: AgentStatus | null = null;
-app.get('/api/agents', (req, res) => { AGENTS = AGENTS || agentStatus(); res.json(AGENTS); });
+const agents = createAgentCache();
+app.get('/api/agents', (req, res) => res.json(agents()));
 app.get('/api/projects', (req, res) => res.json(J.listJobs()));
 
 // New project: a reference (file upload or URL) + brief + agent, optional music / assets / lyrics files.
