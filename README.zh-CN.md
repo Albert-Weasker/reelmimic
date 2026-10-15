@@ -117,6 +117,7 @@ Claude Code 会自己读到 repo 里的 skills，Codex 会读 `AGENTS.md`，不�
 | `CODEX_SANDBOX` | Codex 的沙盒模式（默认 `danger-full-access`，和 Claude Code 允许 Bash 时一样；`workspace-write` 会让 Chrome 渲染跑不起来） |
 | `BUILDERS`、`MAX_AGENTS` | 一支片同时几个 AI 在做（默认 6）、所有项目加起来最多几个（默认 12） |
 | `PORT` | 网站用的端口（默认 4318） |
+| `AGENTS_TTL_MS` | 检测到的 Claude Code / Codex 沿用多久（默认 300000 = 5 分钟；没检测到的每 30 秒重查；`0` 每次都查）。点右上角的 AI 状态可以立刻重查。装到新的 PATH 文件夹的话还是要重启服务器 |
 
 ## 文档
 

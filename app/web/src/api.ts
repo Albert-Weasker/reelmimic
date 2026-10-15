@@ -4,7 +4,7 @@ import type { MessageMeta } from './types.ts';
 type Ok = { ok: true };
 const j = async <T>(r: Response): Promise<T> => { const d: unknown = await r.json().catch(() => ({})); if (!r.ok) throw new Error((d as { error?: string }).error || r.statusText); return d as T; };
 export const api = {
-  agents: () => fetch('/api/agents').then(j<AgentStatus>),
+  agents: (refresh = false) => fetch(refresh ? '/api/agents?refresh=1' : '/api/agents').then(j<AgentStatus>),
   projects: () => fetch('/api/projects').then(j<ProjectSummary[]>),
   project: (id: string) => fetch(`/api/projects/${id}`).then(j<Snapshot>),
   create: (form: FormData) => fetch('/api/projects', { method: 'POST', body: form }).then(j<{ id: string }>),
