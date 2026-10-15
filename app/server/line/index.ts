@@ -95,7 +95,8 @@ export function createBot(cfg: LineConfig, store: Store) {
 // Push a message to every linked account that wants notifications when a video reaches one of these stages.
 // Only changes from now on: stages reached before the server started are never re-sent.
 export const NOTIFY_STAGES: Stage[] = ['plan_review', 'needs_input', 'done', 'error'];
-const CANCELLED = ['已取消', 'Cancelled'];   // the error text of a turn the user cancelled (jobs.ts fail()): no message for that
+// a turn the user cancelled is their own doing: no message for that
+const CANCELLED: string[] = Object.values(J.CANCELLED);
 export function startNotifier(cfg: LineConfig, store: Store) {
   const last = new Map(J.listJobs().map((p) => [p.id, p.stage]));
   // Runs inside the job machine's save(): it must never throw there, or a notification could break a running job.
