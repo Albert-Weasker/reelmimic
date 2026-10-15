@@ -104,7 +104,9 @@ export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, sig
     // Windows: npm shims (claude.cmd) need a shell; args are fixed literals, the prompt goes through stdin.
     // its own process group (POSIX), so a cancel stops the renders and browsers it started too, not only the CLI
     const child = spawn(cmd, args, { cwd, shell: IS_WIN, ...treeOpts, env: { ...process.env, HYPERFRAMES_NO_TELEMETRY: '1', DO_NOT_TRACK: '1' } });
-    if (signal) { if (signal.aborted) killTree(child); else signal.addEventListener('abort', () => killTree(child), { once: true }); }
+    // the signal lives as long as the whole flow: drop the listener when this turn ends, so finished children aren't killed (or kept) later
+    const onAbort = () => killTree(child);
+    if (signal) { if (signal.aborted) killTree(child); else signal.addEventListener('abort', onAbort, { once: true }); }
     lines(child.stdout, (l) => {
       let obj: Json; try { obj = JSON.parse(l); } catch { return; }
       (isClaude ? parseClaude : parseCodex)(obj, emit, st);
@@ -113,6 +115,7 @@ export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, sig
     lines(child.stderr, (l) => { err += l + '\n'; if (!/^\s*$/.test(l) && !/DeprecationWarning|ExperimentalWarning/.test(l)) emit({ type: 'error', text: short(l, 400) }); });
     child.on('error', (e) => { emit({ type: 'error', text: `${cmd} failed to start: ${e.message}` }); });
     child.on('close', (code) => {
+      signal?.removeEventListener('abort', onAbort);
       if (code !== 0) st.ok = false;
       else if (!isClaude && st.ok === false && !err) st.ok = true;
       onEvent({ type: 'done', ok: st.ok, text: st.text, cost: st.cost });

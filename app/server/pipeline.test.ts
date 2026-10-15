@@ -27,6 +27,7 @@ interface Scenario {
   crash?: (step: string) => string | null;                 // this turn fails with that error text, writing nothing
   holdMs?: (step: string) => number;                       // this turn takes that long (ends early when cancelled)
   broken?: (step: string) => 'once' | 'always' | null;     // its JSON files come out unreadable; 'once': the format fix repairs them
+  say?: (step: string) => string | null;                   // this turn succeeds and replies with that text
 }
 const pending = new Map<string, { files: [string, unknown][]; always: boolean }>();   // per project: the good files a format fix writes
 let S: Scenario;
@@ -110,7 +111,7 @@ async function fakeAgent({ cwd, prompt, onEvent, signal }: AgentRun) {
     for (const [f] of json) put(dir, f, '{ not json');
   }
   onEvent?.({ type: 'session', id: `sess-${calls.length}` });
-  return { sessionId: `sess-${calls.length}`, text: `did ${name}`, ok: true, code: 0, stderr: '', lastError: '' };
+  return { sessionId: `sess-${calls.length}`, text: S.say?.(name) || `did ${name}`, ok: true, code: 0, stderr: '', lastError: '' };
 }
 function put(dir: string, f: string, v: unknown) {
   const p = join(dir, f); mkdirSync(dirname(p), { recursive: true });
@@ -414,6 +415,13 @@ describe('one flow per project', () => {
     assert.equal(j.failed, 'producing');
     assert.match(j.error || '', /用量到上限|usage limit/);
     assert.ok(!calls.includes('assemble'));
+  });
+
+  test('a turn that finished is not stopped for mentioning a rate limit or quota', async () => {
+    S = base({ say: (s) => (s === 'build:C1' ? 'yt-dlp hit a rate limit, retried, done' : s === 'shot_qa:S2:1' ? 'within quota' : null) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done');
   });
 
   test('an agent that fails on the shot line is reported as that error, not as a part to judge', async () => {

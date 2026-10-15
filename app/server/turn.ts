@@ -74,8 +74,9 @@ export async function turn<P extends Phase>(id: string, phase: P, vars: StepVars
   if (missing.length && r.ok && load(id).retryPending) missing = missing.filter((f) => !existsSync(join(d, f)));
   if (load(id).retryPending) update(id, (x) => { delete x.retryPending; });
   if (r.text) chat(id, session === 'fresh' ? 'critic' : session === 'director' ? 'agent' : 'builder', r.text, { phase, who: label });
-  // an account limit is the real cause, even when it also left outputs missing: say so plainly
-  const limit = [r.lastError, r.text, r.stderr].find((t) => t && LIMIT.test(t));
+  // an account limit is the real cause, even when it also left outputs missing: say so plainly. Only for a turn that
+  // failed: a finished one may mention "rate limit" or "quota" (yt-dlp output, a reviewer's notes) without being stopped by one
+  const limit = (!r.ok || missing.length) && [r.lastError, r.text, r.stderr].find((t) => t && LIMIT.test(t));
   if (limit) return { ok: false, why: 'limit', text: r.text, missing, detail: limit.slice(-300) };
   if (!r.ok && !missing.length) return { ok: false, why: 'crashed', text: r.text, detail: r.stderr.slice(-300) };
   if (missing.length) return { ok: false, why: 'missing', text: r.text, missing };

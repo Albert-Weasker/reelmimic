@@ -27,10 +27,10 @@ export async function castGate(id: string, prev: Pipeline): Promise<boolean> {
   chat(id, 'system', L(id, `角色關：${chars.length} 個角色各自由一組審查＋修正同時進行`, `Characters: reviewing and fixing ${chars.length} character${chars.length > 1 ? 's' : ''} in parallel`));
   const shared: SharedItem[] = [];
   let broken = null as TurnResult | null;   // the first agent turn that failed: reported as itself, not as "didn't pass review"
-  const one = async (c: CastMember): Promise<CastResult> => {
+  const one = async (c: CastMember, recheck = false): Promise<CastResult> => {
     const reviewFile = join(d, 'out', 'check', 'cast', `review_${c.id}.json`);
     // resuming a character that stopped at its round limit: its last review is still current, so fix those issues first
-    const reuse = keep[c.id]?.state === 'failed' && existsSync(reviewFile);
+    const reuse = !recheck && keep[c.id]?.state === 'failed' && existsSync(reviewFile);   // a re-check after a shared fix always reviews afresh
     const { end, last } = await reviewFix<Review>({
       review: async (round) => {
         setC(c.id, { state: 'reviewing', round });
@@ -63,7 +63,7 @@ export async function castGate(id: string, prev: Pipeline): Promise<boolean> {
     const f = await turn(id, 'cast_fix', { issues: [...shared], round: 'shared', shared: true }, ['out/check/cast/sheet.jpg'], { who: 'director' });
     if (!f.ok) return fail(id, 'producing', f);
     shared.length = 0;
-    res = await Promise.all(chars.map((c, i) => (res[i] === 'passed' || res[i] === 'shared' ? one(c) : res[i])));
+    res = await Promise.all(chars.map((c, i) => (res[i] === 'passed' || res[i] === 'shared' ? one(c, true) : res[i])));
     if (broken) return fail(id, 'producing', broken);
     if (res.includes('needs')) return pause(id);
   }
