@@ -13,7 +13,18 @@ ReelMimic 由三層組成：**網站**（React）、**伺服器**（Node，負�
 伺服器（app/server）
    ├─ index.ts          HTTP API、上傳、SSE、提供專案檔案（/files/:id/*）
    ├─ env.ts            啟動時載入 ~/.reelmimic/secrets.json
-   ├─ jobs.ts           流程狀態機 + 生產線排程（誰先誰後、平行幾個、何時暫停）
+   ├─ jobs.ts           使用者的操作（開始、核准、留言、重試…）、專案列表與快照
+   ├─ preprod.ts        分析 → 風格 → 企劃（角色與素材平行打草稿）
+   ├─ production.ts     製作準備 → 角色關 → 分段製作（多個 builder 平行、每鏡做完就審）→ 組裝
+   ├─ prerender.ts      通過審查的段落在背景先渲染（有影格快取的引擎），取消時一起停
+   ├─ cast.ts           角色關：每個角色平行審查修正、並排檢查、序列版
+   ├─ final.ts          最後評審 ⇄ 修改
+   ├─ review.ts         每一關共用的「審查 → 修正」迴圈（輪數上限、needs_user、通過規則）
+   ├─ turn.ts           一次 agent 回合：全域名額（審查與修正插隊）、必須檔案檢查、失敗原因
+   ├─ contract.ts       agent 寫的 JSON 檔格式檢查（企劃、製作規劃、審查、修正、評審）
+   ├─ runner.ts         每個專案同時只跑一條流程；取消會停掉它開的所有 agent 與工具程序（整棵程序樹）
+   ├─ store.ts          job.json、事件紀錄、即時更新、輪數設定
+   ├─ inputs.ts         需要使用者提供的素材、歌詞對時
    ├─ prompts.ts        每個步驟給 agent 的指令（改檔後下一輪就生效，不用重啟）
    └─ agents/index.ts   agent 轉接層：Claude Code / Codex → 統一事件
    │  spawn（stdin 給指令，stdout 串流事件）
@@ -46,7 +57,7 @@ new → analyzing → styling → planning → plan_review ⇄ replanning
 | critiquing | 獨立評審（全新對話） | `out/check/critique.json` |
 | revising | 導演 agent | `out/video.mp4`、`out/check/fixes.json`（每項附修改前後截圖） |
 
-**完成的判準是檔案**：`turn()` 記下必須檔案的修改時間，agent 回合結束後檢查它們有沒有被更新；沒有就停在 `error`，可以「重試這一步」。
+**完成的判準是檔案**：`turn()` 記下必須檔案的修改時間，agent 回合結束後檢查它們有沒有被更新；沒有就停在 `error`，可以「重試這一步」。更新過的 JSON 檔再照合約檢查（`contract.ts`，只查伺服器會用到的欄位）：格式不對就請同一個 agent 對話重寫一次，還是不對這一步就停在 `error`，並列出哪些欄位有問題。
 伺服器重啟時，還標在工作中的專案會被標成「已中斷」（`recoverOrphans`），重試會從目前的檔案接著做。
 
 ## 2. 生產線（核准之後）
@@ -85,8 +96,8 @@ assemble（導演）：組裝、混音、全片輸出
 
 ```
 projects/<id>/
-  job.json               伺服器管理：階段、session id、對話、事件紀錄（最近 600 筆）、生產線狀態
-  logs/events.jsonl      完整事件紀錄（不截斷）
+  job.json               伺服器管理：階段、session id、對話、生產線狀態
+  logs/events.jsonl      完整事件紀錄（不截斷；介面顯示最近 600 筆）
   brief.md / inputs/     使用者的需求原文與上傳的素材
   analysis/              report.json、STYLE.md、route.json、lyrics/subs.lrc|json
   plan.json              前製企劃（網站的主要畫面）
