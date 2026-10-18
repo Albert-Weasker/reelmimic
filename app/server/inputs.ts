@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnTool } from './runner.ts';
-import { L, PY, ROOT, SCRIPTS, dirOf, load, log, noPython, readJSON, readText, update } from './store.ts';
+import { L, PY, ROOT, SCRIPTS, chat, dirOf, load, log, noPython, readJSON, readText, update } from './store.ts';
 import type { Job, Plan, RequiredInput } from '../shared/types.ts';
 
 export function requiredInputs(id: string, plan: Plan | null, job: Job): RequiredInput[] {
@@ -31,10 +31,28 @@ export function provideInput(id: string, inputId: string, saved: string[]) {   /
   if (!r || !saved.length) return false;
   update(id, (j) => { j.provided = { ...(j.provided || {}), [inputId]: saved }; j.waived = (j.waived || []).filter((x) => x !== inputId); });
   const txt = r.kind === 'lyrics' && saved.find((f) => /\.txt$/i.test(f)), text = txt && !/(^|\/)lyrics\.txt$/i.test(txt) ? readText(join(d, txt)) : null;
-  (text?.trim() ? saveLyrics(id, text) : alignIfReady(id)).catch((e) => console.error(e));
+  void withAlignNotice(id, text?.trim() ? saveLyrics(id, text) : alignIfReady(id));
   return true;
 }
 // Lyrics pasted before the music arrived are only text: time them as soon as there is audio (and again before production).
+// A failed timing used to be invisible to the person who can act on it: `saveLyrics` resolves an
+// `{ ok: false }` result and an `alignIfReady` rejection carries only a message, so both call
+// sites dropped the outcome. Every alignment attempt now ends in a chat line when it fails - the
+// job log keeps the detail, the chat says that it happened and what to do next.
+export function withAlignNotice(id: string, p: Promise<LyricsResult | null>): Promise<LyricsResult | null> {
+  return p
+    .then((r) => {
+      if (r && !r.ok) chat(id, 'system', L(id, '無法為歌詞對時；流程會繼續，之後重新貼上歌詞即可再試一次',
+        'Lyrics could not be timed; the run continues, and pasting them again later will retry the alignment'));
+      return r;
+    })
+    .catch((e: Error) => {
+      chat(id, 'system', L(id, '無法為歌詞對時；流程會繼續，之後重新貼上歌詞即可再試一次',
+        `Lyrics could not be timed (${e.message}); the run continues`));
+      return null;
+    });
+}
+export const alignIfReadyWithNotice = (id: string) => withAlignNotice(id, alignIfReady(id));
 export async function alignIfReady(id: string): Promise<LyricsResult | null> {
   const d = dirOf(id);
   if (!existsSync(join(d, 'inputs', 'lyrics.txt')) || existsSync(join(d, 'analysis', 'lyrics', 'subs.lrc')) || !musicFile(id)) return null;
