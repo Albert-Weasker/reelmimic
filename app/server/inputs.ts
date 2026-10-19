@@ -47,8 +47,8 @@ export function withAlignNotice(id: string, p: Promise<LyricsResult | null>): Pr
       return r;
     })
     .catch((e: Error) => {
-      chat(id, 'system', L(id, '無法為歌詞對時；流程會繼續，之後重新貼上歌詞即可再試一次',
-        `Lyrics could not be timed (${e.message}); the run continues`));
+      chat(id, 'system', L(id, `無法為歌詞對時（${e.message}）；流程會繼續，之後重新貼上歌詞即可再試一次`,
+        `Lyrics could not be timed (${e.message}); the run continues, and pasting them again later will retry the alignment`));
       return null;
     });
 }

@@ -27,7 +27,7 @@ import type { Production } from './types.ts';
 
 export { ROUND_KEYS };
 export { CANCELLED, CONFIG, PROJECTS, ROOT, ROUND_RANGE, bus, cleanRounds, dirOf, load, rounds, touch, type BusEvent } from './store.ts';
-export { alignIfReady, openInputs, provideInput, saveLyrics, unwaive, waive, type LyricsResult } from './inputs.ts';
+export { alignIfReady, alignIfReadyWithNotice, openInputs, provideInput, saveLyrics, unwaive, waive, type LyricsResult } from './inputs.ts';
 export { stopAll } from './runner.ts';
 export const busy = active;   // a flow is running for this project (runner.ts allows one at a time)
 // Stop the project's flow and every process it started; background renders queued behind them don't start either.
