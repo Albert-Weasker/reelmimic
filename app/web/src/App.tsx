@@ -25,16 +25,17 @@ function useTheme(): [string, () => void] {
 export default function App() {
   const r = useRoute(), [theme, toggle] = useTheme();
   const [agents, setAgents] = useState<Partial<AgentStatus> | undefined>(undefined);
-  useEffect(() => { api.agents().then(setAgents).catch(() => setAgents({})); }, []);
+  const loadAgents = (refresh = false) => { setAgents(undefined); api.agents(refresh).then(setAgents).catch(() => setAgents({})); };
+  useEffect(() => loadAgents(), []);
   return (
     <>
       <header className="nav">
         <a className="brand" href="#/"><BrandMark />ReelMimic</a>
         <span className="sp" />
-        <div className="agents-cap" title="已連線的 AI 導演">
+        <button className="agents-cap" title="已連線的 AI 導演（點一下重新偵測）" disabled={agents === undefined} onClick={() => loadAgents(true)}>
           <span><i className={`dot ${agents === undefined ? '' : agents?.claude ? 'on' : 'bad'}`} /><span className="lbl">Claude Code</span></span>
           <span><i className={`dot ${agents === undefined ? '' : agents?.codex ? 'on' : 'bad'}`} /><span className="lbl">Codex</span></span>
-        </div>
+        </button>
         <LangMenu />
         <button className="icon-btn" onClick={toggle} aria-label="切換外觀"><I n={theme === 'dark' ? 'sun' : 'moon'} /></button>
       </header>

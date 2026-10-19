@@ -11,16 +11,18 @@
 //   { type: 'error', text }                       stderr or a failure
 //
 // The prompt always goes through stdin, so nothing user-typed is ever put on a command line.
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { AgentEvent, AgentKind, AgentStatus } from '../../shared/types.ts';
+import { killTree, treeOpts } from '../runner.ts';
 
 const IS_WIN = process.platform === 'win32';
 // An old codex-cli can shadow a current one on PATH (e.g. a runtime manager's copy). Prefer CODEX_BIN, then npm's global shim.
 const NPM_CODEX = IS_WIN && process.env.APPDATA ? join(process.env.APPDATA, 'npm', 'codex.cmd') : null;
-const CODEX_BIN = process.env.CODEX_BIN || (NPM_CODEX && existsSync(NPM_CODEX) ? NPM_CODEX : 'codex');
+// Resolved per call, not at load, so a codex installed through npm after the server started is found on the next probe
+const codexBin = () => process.env.CODEX_BIN || (NPM_CODEX && existsSync(NPM_CODEX) ? NPM_CODEX : 'codex');
 const CLAUDE_TOOLS = 'Bash,Read,Write,Edit,Glob,Grep,Skill,WebFetch,WebSearch,TodoWrite';
 
 export interface AgentRun {
@@ -38,12 +40,22 @@ type Emit = (e: AgentEvent) => void;
 // One line of the CLIs' JSON streams; only the fields read below
 type Json = Record<string, any>;   // eslint-disable-line @typescript-eslint/no-explicit-any
 
-export function agentStatus(): AgentStatus {
-  const probe = (cmd: string) => {
-    const r = spawnSync(cmd, ['--version'], { shell: IS_WIN, encoding: 'utf8', timeout: 20000 });
-    return r.status === 0 ? (r.stdout || '').trim().split('\n')[0] : null;
-  };
-  return { claude: probe('claude'), codex: probe(CODEX_BIN) };
+// Async: the probe re-runs while agent turns are streaming, and a blocking --version (slow on a cold Windows shell) would stall the server.
+// Note the server keeps the PATH it started with: a CLI installed into a new PATH directory still needs a restart.
+function probe(cmd: string): Promise<string | null> {
+  return new Promise((done) => {
+    let out = '';
+    const child = spawn(cmd, ['--version'], { shell: IS_WIN, stdio: ['ignore', 'pipe', 'ignore'], timeout: 20000 });
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (d: string) => { out += d; });
+    child.on('error', () => done(null));
+    child.on('close', (code) => done(code === 0 ? out.trim().split('\n')[0] || null : null));
+  });
+}
+
+export async function agentStatus(): Promise<AgentStatus> {
+  const [claude, codex] = await Promise.all([probe('claude'), probe(codexBin())]);
+  return { claude, codex };
 }
 
 function lines(stream: Readable, onLine: (l: string) => void) {
@@ -98,11 +110,14 @@ export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, sig
     const st: TurnState = { sessionId, text: '', ok: false, cost: null, lastError: '' };
     const emit: Emit = (e) => { if (e.type === 'error') st.lastError = e.text; onEvent(e); };   // keep the last error for the job's error card
     const isClaude = kind === 'claude';
-    const cmd = isClaude ? 'claude' : CODEX_BIN;
+    const cmd = isClaude ? 'claude' : codexBin();
     const args = isClaude ? claudeArgs(sessionId) : codexArgs(sessionId, cwd);
     // Windows: npm shims (claude.cmd) need a shell; args are fixed literals, the prompt goes through stdin.
-    const child = spawn(cmd, args, { cwd, shell: IS_WIN, env: { ...process.env, HYPERFRAMES_NO_TELEMETRY: '1', DO_NOT_TRACK: '1' } });
-    if (signal) signal.addEventListener('abort', () => { try { IS_WIN ? spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F']) : child.kill('SIGTERM'); } catch {} });
+    // its own process group (POSIX), so a cancel stops the renders and browsers it started too, not only the CLI
+    const child = spawn(cmd, args, { cwd, shell: IS_WIN, ...treeOpts, env: { ...process.env, HYPERFRAMES_NO_TELEMETRY: '1', DO_NOT_TRACK: '1' } });
+    // the signal lives as long as the whole flow: drop the listener when this turn ends, so finished children aren't killed (or kept) later
+    const onAbort = () => killTree(child);
+    if (signal) { if (signal.aborted) killTree(child); else signal.addEventListener('abort', onAbort, { once: true }); }
     lines(child.stdout, (l) => {
       let obj: Json; try { obj = JSON.parse(l); } catch { return; }
       (isClaude ? parseClaude : parseCodex)(obj, emit, st);
@@ -111,6 +126,7 @@ export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, sig
     lines(child.stderr, (l) => { err += l + '\n'; if (!/^\s*$/.test(l) && !/DeprecationWarning|ExperimentalWarning/.test(l)) emit({ type: 'error', text: short(l, 400) }); });
     child.on('error', (e) => { emit({ type: 'error', text: `${cmd} failed to start: ${e.message}` }); });
     child.on('close', (code) => {
+      signal?.removeEventListener('abort', onAbort);
       if (code !== 0) st.ok = false;
       else if (!isClaude && st.ok === false && !err) st.ok = true;
       onEvent({ type: 'done', ok: st.ok, text: st.text, cost: st.cost });

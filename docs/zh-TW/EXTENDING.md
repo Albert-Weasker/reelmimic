@@ -11,7 +11,7 @@ ReelMimic 的擴充點由淺到深：
 | 調整 agent 在某一步怎麼做 | `app/server/prompts.ts` | 只改文字，下一輪就生效 |
 | 加新工具給 agent 用 | `.claude/skills/video-clone/scripts/` | 寫腳本，再在 prompt／SKILL.md 提到它 |
 | 接另一種 AI 導演（新的 agent CLI） | `app/server/agents/index.ts` | 要 |
-| 改生產線的步驟或順序 | `app/server/jobs.ts` + `prompts.ts` + `CONTRACT.md` | 要 |
+| 改生產線的步驟或順序 | `app/server/`（見第 5 節）+ `prompts.ts` + `CONTRACT.md` | 要 |
 
 ---
 
@@ -104,14 +104,17 @@ agent 需要能：讀寫 repo 內檔案、執行 shell（python、node、ffmpeg�
 
 ## 5. 改生產線
 
-`app/server/jobs.ts` 的主要函式：
+`app/server/` 裡各部分的位置：
 
-- `production()`：setup → `castGate()`（與分段製作同時跑）→ `runChunk()` × N → assemble。
-- `castGate()` / `castSerial()`：每個角色平行審查修正；一個角色或共用檔時走序列版。
-- `finalPanel()`：最後評審 ⇄ 修改。
-- `turn()`：派一次 agent 回合（session 管理、全域名額、必須檔案檢查）。
+- `preprod.ts` — `preProduction()`：企劃核心 → 角色與素材平行 → 風格畫面。
+- `production.ts` — `production()`：setup → `castGate()`（與分段製作同時跑）→ `runChunk()` × N → assemble。
+- `cast.ts` — `castGate()` / `castSerial()`：每個角色平行審查修正；一個角色或共用檔時走序列版。
+- `final.ts` — `finalPanel()`：最後評審 ⇄ 修改。
+- `review.ts` — `reviewFix()`：上面每一關共用的「審查 → 修正」迴圈。新的關卡只要給 `review`、`verdict`、`limit`、`fix`，輪數、暫停、到上限停下都由迴圈處理。
+- `turn.ts` — `turn()`：派一次 agent 回合（session 管理、全域名額、必須檔案檢查、失敗原因）；`step()` 是會推進階段的回合。
+- `jobs.ts` — 使用者的操作，每一個都是這個專案唯一的一條流程（`runner.ts`），所以「取消」能停掉全部。
 
-改步驟時三個地方要一起改：`jobs.ts`（流程）、`prompts.ts`（指令）、`CONTRACT.md`（新檔案的格式），前端要顯示的話再改 `Project.tsx`。
+改步驟時三個地方要一起改：上面對應的流程檔、`prompts.ts`（指令）、`CONTRACT.md`（新檔案的格式；伺服器會讀來做判斷的話，在 `contract.ts` 加上它的格式），前端要顯示的話再改 `Project.tsx`。
 參數（平行數、每關輪數）在 `CONFIG`，也可以用環境變數調整。
 
 ## 6. 介面文字與翻譯

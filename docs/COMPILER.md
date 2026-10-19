@@ -255,10 +255,11 @@ behind them can be read as a still camera; and a single critic is still the fina
 
 - **Stage 4, event-sourced kernel.** Measured first: a `log()` rewrites job.json (≈ 260 KB) in 3.9 ms, and the busiest
   real minute had 82 events — 0.5 % of a core. Rewriting a working, tested orchestrator for that would be change for
-  its own sake. What stage 4 was for that *does* fail in practice is in: outputs are checked
-  (`app/server/outputs.ts`), with one repair turn in the same conversation — before it, a critique.json with a
-  trailing comma was read as "nothing to fix" and the film delivered as passed, and a broken production.json built
-  nothing yet reached "done" (both reproduced in `pipeline.test.ts`).
+  its own sake (main has since moved the event log out of job.json into `logs/events.jsonl`). What stage 4 was for
+  that *does* fail in practice is in: agent outputs are checked against the contract (`app/server/contract.ts`), with
+  one repair turn in the same conversation — otherwise a critique.json with a trailing comma reads as "nothing to fix"
+  and a broken production.json builds nothing; and job.json is written atomically, after a full disk once truncated it
+  to 0 bytes and the project could no longer be opened.
 - **Stage 5, learned critic.** It needs labelled outcomes — which findings a director acted on, which the user agreed
   with — and there are 18 projects, judged only by an LLM critic. A model trained on that would learn the LLM critic
   and overfit. The data it needs is now produced for every film (`style_distance.json` next to `critique.json` and the

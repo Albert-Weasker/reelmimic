@@ -117,6 +117,7 @@ Claude Code 會自己讀到 repo 裡的 skills，Codex 會讀 `AGENTS.md`，不�
 | `CODEX_SANDBOX` | Codex 的沙盒模式（預設 `danger-full-access`，和 Claude Code 允許 Bash 時一樣；`workspace-write` 會讓 Chrome 渲染跑不起來） |
 | `BUILDERS`、`MAX_AGENTS` | 一支片同時幾個 AI 在做（預設 6）、所有專案加起來最多幾個（預設 12） |
 | `PORT` | 網站用的埠號（預設 4318） |
+| `AGENTS_TTL_MS` | 偵測到的 Claude Code / Codex 沿用多久（預設 300000 = 5 分鐘；沒偵測到的每 30 秒重查；`0` 每次都查）。點右上角的 AI 狀態可以立刻重查。裝到新的 PATH 資料夾的話還是要重開伺服器 |
 
 ## 文件
 
@@ -131,6 +132,10 @@ Claude Code 會自己讀到 repo 裡的 skills，Codex 會讀 `AGENTS.md`，不�
 - 網路上找來的素材會記下來源、作者跟授權，授權不清楚的會特別標出來。
 - 歌詞只用你給的文字，不會自己去下載商業歌曲。
 - 做出來的影片要怎麼用，請自己確認有沒有權利。
+
+## Star 趨勢
+
+[![Star History Chart](https://api.star-history.com/svg?repos=edenfunf/reelmimic&type=Date)](https://star-history.com/#edenfunf/reelmimic&Date)
 
 ## 授權
 

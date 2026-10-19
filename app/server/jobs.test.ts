@@ -2,12 +2,14 @@
 // Runs against a throwaway projects folder (REELMIMIC_PROJECTS), never the real one. No agent is started.
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const TMP = mkdtempSync(join(tmpdir(), 'reelmimic-test-'));
 process.env.REELMIMIC_PROJECTS = TMP;
+// Make every python spawn fail in this file's process: the alignment test needs the failure path.
+process.env.PYTHON = 'rr-no-such-python';
 const J = await import('./jobs.ts');
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
@@ -26,6 +28,40 @@ describe('cleanRounds', () => {
     assert.throws(() => J.cleanRounds({ castRounds: 0 }), /1 to 10/);
     assert.throws(() => J.cleanRounds({ castRounds: 11 }), /1 to 10/);
     assert.throws(() => J.cleanRounds({ chunkRounds: 2.5 }), /whole number/);
+  });
+  test('the edges of the range pass', () => {
+    assert.deepEqual(J.cleanRounds({ castRounds: 1, finalRounds: 10 }), { castRounds: 1, finalRounds: 10 });
+    assert.deepEqual(J.cleanRounds({ chunkRounds: '10' }), { chunkRounds: 10 });
+  });
+  test('non-numeric input is rejected like the rest', () => {
+    assert.throws(() => J.cleanRounds({ castRounds: 'abc' }), /whole number/);
+  });
+});
+
+describe('isVideoName', () => {
+  test('accepts the video extensions in any letter case', () => {
+    for (const name of ['clip.mp4', 'CLIP.MOV', 'a.b.MkV', '參考影片.webm', 'x.avi', 'x.m4v', 'x.mpg', 'x.mpeg']) assert.ok(J.isVideoName(name), name);
+  });
+  test('rejects subtitles, documents, images and names with no extension', () => {
+    for (const name of ['subs.srt', 'brief.pdf', 'poster.png', 'song.mp3', 'clip.mp4.txt', 'reference', '.mp4']) assert.ok(!J.isVideoName(name), name);
+  });
+});
+
+describe('projectTitle', () => {
+  test('uses the title when one is given', () => {
+    assert.equal(J.projectTitle('My video', 'a brief', 'en'), 'My video');
+  });
+  test('falls back to the first non-empty line of the brief', () => {
+    assert.equal(J.projectTitle('', '\n  \nA video about cats\nmore', 'en'), 'A video about cats');
+    assert.equal(J.projectTitle('   ', 'Line one\r\nLine two', 'zh-TW'), 'Line one');
+  });
+  test('the placeholder follows the project language', () => {
+    assert.equal(J.projectTitle('', '\n', 'en'), 'Untitled');
+    assert.equal(J.projectTitle('', '', 'zh-TW'), '未命名');
+    assert.equal(J.projectTitle(undefined, '', 'zh-CN'), '未命名');
+  });
+  test('cuts at 40 characters without splitting an emoji', () => {
+    assert.equal(J.projectTitle('a'.repeat(39) + '🎬🎬', '', 'en'), 'a'.repeat(39) + '🎬');
   });
 });
 
@@ -123,5 +159,54 @@ describe('project list', () => {
     assert.ok(list.length >= 5);
     const times = list.map((p) => p.updatedAt || '');
     assert.deepEqual(times, [...times].sort().reverse());
+  });
+});
+
+const S = await import('./store.ts');
+const I = await import('./inputs.ts');
+describe('event log', () => {
+  test('an event goes to events.jsonl and the snapshot, without rewriting job.json', () => {
+    const { id } = newJob();
+    const before = readFileSync(join(J.dirOf(id), 'job.json'), 'utf8');
+    S.log(id, { type: 'text', text: 'hello' });
+    assert.equal(readFileSync(join(J.dirOf(id), 'job.json'), 'utf8'), before);
+    assert.equal(J.snapshot(id).job.log.at(-1)?.type, 'text');
+    assert.match(readFileSync(join(J.dirOf(id), 'logs', 'events.jsonl'), 'utf8'), /hello/);
+    assert.ok(!('log' in JSON.parse(before)));
+  });
+  test('after a restart the latest 600 come back from the tail of events.jsonl', () => {
+    const id = 'restart-log', d = J.dirOf(id);
+    mkdirSync(join(d, 'logs'), { recursive: true });
+    writeFileSync(join(d, 'job.json'), JSON.stringify({ id, title: 't', agent: 'claude', stage: 'done', chat: [], needs: [], pipeline: {} }));
+    writeFileSync(join(d, 'logs', 'events.jsonl'), Array.from({ length: 700 }, (_, i) => JSON.stringify({ ts: 't', type: 'text', text: `e${i}` })).join('\n') + '\n');
+    const log = J.snapshot(id).job.log as { text?: string }[];
+    assert.equal(log.length, 600);
+    assert.equal(log[0].text, 'e100');
+    assert.equal(log.at(-1)!.text, 'e699');
+  });
+  test('a project from before events.jsonl keeps its log: moved out of job.json on first write', () => {
+    const id = 'old-log', d = J.dirOf(id);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'job.json'), JSON.stringify({ id, title: 't', agent: 'claude', stage: 'done', chat: [], needs: [], pipeline: {}, log: [{ ts: 't', type: 'text', text: 'old' }] }));
+    J.waive(id, 'x');   // any write
+    assert.ok(!('log' in JSON.parse(readFileSync(join(d, 'job.json'), 'utf8'))));
+    assert.match(readFileSync(join(d, 'logs', 'events.jsonl'), 'utf8'), /"old"/);
+    assert.equal((J.snapshot(id).job.log[0] as { text?: string }).text, 'old');
+  });
+});
+
+describe('lyric alignment notices', () => {
+  test('a failed alignment is surfaced in the chat instead of vanishing', async () => {
+    const { id } = newJob();
+    mkdirSync(join(J.dirOf(id), 'inputs'), { recursive: true });
+    writeFileSync(join(J.dirOf(id), 'inputs', 'lyrics.txt'), 'la la la\n');
+    writeFileSync(join(J.dirOf(id), 'inputs', 'song.mp3'), '');
+    writePlan(id, { music: { file: 'inputs/song.mp3' } });
+    const r = await I.alignIfReadyWithNotice(id);
+    assert.ok(r === null || r.ok === false, 'alignment must not report success without python');
+    const last = J.load(id).chat.at(-1);
+    assert.equal(last?.role, 'system');
+    assert.match(last?.text || '', /could not be timed|無法為歌詞對時/);
+    assert.ok(!existsSync(join(J.dirOf(id), 'analysis', 'lyrics', 'subs.lrc')), 'no subs.lrc without a run');
   });
 });

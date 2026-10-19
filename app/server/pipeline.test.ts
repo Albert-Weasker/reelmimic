@@ -23,9 +23,13 @@ interface Scenario {
   critique: (round: number) => { must?: number; needs?: number; lostPeak?: boolean; items?: { shot: string; issue: string }[] };
   buildDelayMs?: number;                                   // let the per-shot watcher (every 4 s) pick shots up
   prerender?: string;                                      // production.json prerender command
-  badJson?: (step: string, call: number) => boolean;       // the agent writes broken JSON for this step (LLMs do: trailing commas, comments)
-  repairFails?: boolean;                                   // … and its repair turn does not fix it
+  blockers?: number;                                       // blocker issues in a failing shot review (default 1)
+  crash?: (step: string) => string | null;                 // this turn fails with that error text, writing nothing
+  holdMs?: (step: string) => number;                       // this turn takes that long (ends early when cancelled)
+  broken?: (step: string) => 'once' | 'always' | null;     // its JSON files come out unreadable; 'once': the format fix repairs them
+  say?: (step: string) => string | null;                   // this turn succeeds and replies with that text
 }
+const pending = new Map<string, { files: [string, unknown][]; always: boolean }>();   // per project: the good files a format fix writes
 let S: Scenario;
 let calls: string[] = [];
 const count: Record<string, number> = {};
@@ -63,7 +67,7 @@ function outputs(prompt: string, dir: string): [string, Record<string, unknown>]
   }
   if ((r = m(/## 步驟：審查鏡頭 (\S+?)（屬於段落 (\S+?)，第 (\d+) 輪）/))) {
     const [sid, round] = [r[1], +r[3]], ok = S.shotPass(sid, round), out = m(/寫 (out\/check\/shots\/\S+?\.review\.json)（JSON）/)![1];
-    return [`shot_qa:${sid}:${round}`, { [out]: { shots: [{ id: sid, pass: ok, issues: ok ? [] : [{ issue: 'seam', severity: 'blocker' }] }] } }];
+    return [`shot_qa:${sid}:${round}`, { [out]: { shots: [{ id: sid, pass: ok, issues: ok ? [] : Array.from({ length: S.blockers ?? 1 }, (_, i) => ({ issue: `seam ${i}`, severity: 'blocker' })) }] } }];
   }
   if ((r = m(/## 步驟：修鏡頭段 (\S+?)（/))) {
     const c = r[1], shared = S.sharedFix?.(c, bump(`sf-${c}`)), shot = S.chunks.find((x) => x.id === c)!.shots[0];
@@ -79,28 +83,35 @@ function outputs(prompt: string, dir: string): [string, Record<string, unknown>]
   throw new Error('fake agent: unknown step\n' + prompt.slice(0, 300));
 }
 
-const intended: Record<string, unknown> = {};   // what a broken file should have said (the repair turn writes it)
-async function fakeAgent({ cwd, prompt, onEvent }: AgentRun) {
+async function fakeAgent({ cwd, prompt, onEvent, signal }: AgentRun) {
   const dir = resolve(cwd, prompt.match(/專案資料夾：(\S+?)[（。]/)![1]);
-  if (/## 步驟：修正輸出檔的 JSON/.test(prompt)) {
-    calls.push('repair_json');
-    for (const f of [...prompt.matchAll(/^- (\S+\.json)：/gm)].map((x) => x[1])) put(dir, f, S.repairFails ? '{ still: broken, }' : intended[f]);
-    onEvent?.({ type: 'session', id: `sess-${calls.length}` });
-    return { sessionId: `sess-${calls.length}`, text: 'fixed the JSON', ok: true, code: 0, stderr: '', lastError: '' };
+  if (/## 修正檔案格式/.test(prompt)) {
+    calls.push('fix_format');
+    const p = pending.get(dir); pending.delete(dir);
+    if (p && !p.always) for (const [f, v] of p.files) put(dir, f, v);
+    return { sessionId: 'sess-fix', text: 'fixed the format', ok: true, code: 0, stderr: '', lastError: '' };
   }
   const [name, files] = outputs(prompt, dir);
-  if (S.badJson?.(name, bump(`bad-${name}`))) {
-    for (const [f, v] of Object.entries(files)) if (f.endsWith('.json')) { intended[f] = v; files[f] = '{ "must_fix": [ { "issue": "x" }, ], // trailing comma and a comment'; }
-  }
   calls.push(name);
+  const hold = S.holdMs?.(name) || 0;
+  if (hold) await new Promise<void>((r) => { const t = setTimeout(r, hold); signal?.addEventListener('abort', () => { clearTimeout(t); r(); }); });
+  if (signal?.aborted) return { sessionId: null, text: '', ok: false, code: null, stderr: '', lastError: '' };
+  const crash = S.crash?.(name);
+  if (crash) return { sessionId: null, text: '', ok: false, code: 1, stderr: crash, lastError: crash };
   if (name.startsWith('build:') && S.buildDelayMs) {   // shot files first, the segment file after the delay
     const entries = Object.entries(files), last = entries.pop()!;
     for (const [f, v] of entries) put(dir, f, v);
     await new Promise((r) => setTimeout(r, S.buildDelayMs));
     put(dir, ...last);
   } else for (const [f, v] of Object.entries(files)) put(dir, f, v);
+  const mode = S.broken?.(name);
+  if (mode) {
+    const json = Object.entries(files).filter(([f]) => f.endsWith('.json'));
+    pending.set(dir, { files: json, always: mode === 'always' });
+    for (const [f] of json) put(dir, f, '{ not json');
+  }
   onEvent?.({ type: 'session', id: `sess-${calls.length}` });
-  return { sessionId: `sess-${calls.length}`, text: `did ${name}`, ok: true, code: 0, stderr: '', lastError: '' };
+  return { sessionId: `sess-${calls.length}`, text: S.say?.(name) || `did ${name}`, ok: true, code: 0, stderr: '', lastError: '' };
 }
 function put(dir: string, f: string, v: unknown) {
   const p = join(dir, f); mkdirSync(dirname(p), { recursive: true });
@@ -136,27 +147,6 @@ describe('pre-production', () => {
     assert.deepEqual(calls.slice(2, 4), ['pre_cast', 'pre_cast']);
     assert.equal(calls[4], 'plan_frames');
     assert.ok(existsSync(join(J.dirOf(id), 'build', 'hero.js')));
-  });
-});
-
-describe('broken agent output', () => {
-  test('a critique that is not valid JSON never passes: the same agent repairs it, then the real verdict counts', async () => {
-    S = base({ critique: (r) => ({ must: r === 1 ? 1 : 0 }), badJson: (step, call) => step === 'critique' && call === 1 });
-    const id = newProject('plan_review');
-    await J.approve(id);
-    const j = J.load(id);
-    assert.ok(calls.includes('repair_json'), calls.join(' '));
-    assert.ok(calls.includes('revise'), 'the repaired critique had a must-fix item: it must be revised, not passed');
-    assert.equal(j.stage, 'done', j.error || '');
-  });
-  test('a production.json that stays broken stops the job with a clear error instead of building nothing', async () => {
-    S = base({ badJson: (step) => step === 'setup', repairFails: true });
-    const id = newProject('plan_review');
-    await J.approve(id);
-    const j = J.load(id);
-    assert.equal(j.stage, 'error');
-    assert.match(j.error || '', /production\.json.*JSON/);
-    assert.ok(!calls.some((c) => c.startsWith('build:')), 'no shot is built on a broken production.json');
   });
 });
 
@@ -489,5 +479,135 @@ describe('restart', () => {
     for (let i = 0; i < 100 && J.load(id).stage !== 'plan_review'; i++) await new Promise((r) => setTimeout(r, 50));
     assert.equal(J.load(id).stage, 'plan_review');
     assert.ok(calls.includes('replan'));
+  });
+});
+
+describe('one flow per project', () => {
+  test('an agent that fails inside the parallel cast gate is reported as that error, not as a failed review', async () => {
+    S = base({ chars: ['hero', 'cat'], crash: (s) => (s === 'cast_qa:cat' ? 'You hit your limit' : null) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    const j = J.load(id);
+    assert.equal(j.stage, 'error');
+    assert.equal(j.failed, 'producing');
+    assert.match(j.error || '', /用量到上限|usage limit/);
+    assert.ok(!calls.includes('assemble'));
+  });
+
+  test('a turn that finished is not stopped for mentioning a rate limit or quota', async () => {
+    S = base({ say: (s) => (s === 'build:C1' ? 'yt-dlp hit a rate limit, retried, done' : s === 'shot_qa:S2:1' ? 'within quota' : null) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done');
+  });
+
+  test('an agent that fails on the shot line is reported as that error, not as a part to judge', async () => {
+    S = base({ crash: (s) => (s === 'build:C2' ? 'segfault' : null) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    const j = J.load(id);
+    assert.equal(j.stage, 'error', j.chat.at(-1)?.text);
+    assert.match(j.error || '', /缺少輸出：out\/check\/shots\/C2\.done\.json/);
+    assert.ok(!j.chat.some((c) => /沒通過鏡頭審查/.test(c.text)));
+  });
+
+  test('a second flow is refused while one runs, and busy() says so', async () => {
+    S = base({ holdMs: (s) => (s === 'setup' ? 300 : 0) });
+    const id = newProject('plan_review');
+    const first = J.approve(id);
+    assert.equal(J.busy(id), true);
+    await assert.rejects(J.retry(id), (e: Error & { code?: number }) => e.code === 409);
+    await first;
+    assert.equal(J.busy(id), false);
+    assert.equal(J.load(id).stage, 'done');
+  });
+
+  test('cancel stops the whole run: no new segment starts after it', async () => {
+    S = base({ chunks: ['C1', 'C2', 'C3', 'C4'].map((c, i) => ({ id: c, shots: [`S${i + 1}`] })), holdMs: (s) => (s.startsWith('build:') ? 400 : 0) });
+    const id = newProject('plan_review');
+    const saved = J.CONFIG.builders; J.CONFIG.builders = 1;
+    try {
+      const flow = J.approve(id);
+      while (!calls.includes('build:C1')) await new Promise((r) => setTimeout(r, 10));
+      J.cancel(id);
+      await flow;
+    } finally { J.CONFIG.builders = saved; }
+    const j = J.load(id);
+    assert.equal(j.stage, 'error');
+    assert.match(j.error || '', /已取消|Cancelled/);
+    assert.deepEqual(calls.filter((c) => c.startsWith('build:')), ['build:C1']);
+    assert.equal(J.busy(id), false);
+  });
+});
+
+describe('round limits', () => {
+  test('final review: after finalRounds revises it stops and leaves the call to the user', async () => {
+    S = base({ critique: () => ({ must: 1 }) });
+    const id = newProject('plan_review');
+    J.setRounds(id, { finalRounds: 1 });
+    await J.approve(id);
+    const j = J.load(id);
+    assert.equal(j.stage, 'done');
+    assert.deepEqual(calls.slice(-4), ['critique', 'fix:C1', 'revise', 'critique']);   // S1's item goes to its builder first
+    assert.match(j.chat.at(-1)!.text, /自動修改上限|fix limit/);
+  });
+
+  test('parallel cast gate: a character that never passes stops the gate and is named', async () => {
+    S = base({ chars: ['hero', 'cat'], castPass: (w) => w !== 'cat' });
+    const id = newProject('plan_review');
+    J.setRounds(id, { castRounds: 2 });
+    await J.approve(id);
+    const j = J.load(id);
+    assert.equal(j.stage, 'needs_input');
+    assert.equal(j.pipeline.cast!.chars!.cat.state, 'failed');
+    assert.equal(j.pipeline.cast!.chars!.hero.state, 'passed');
+    assert.deepEqual(calls.filter((c) => c.includes('cat')), ['cast_qa:cat', 'cast_fix:cat', 'cast_qa:cat']);
+    assert.match(j.chat.at(-1)!.text, /cat/);
+    assert.ok(!calls.includes('cast_qa:lineup'));
+  });
+
+  test('a note on a segment stopped at its limit fixes first, then re-reviews only the bad shot (the reused review is not a round)', async () => {
+    S = base({ shotPass: (s, r) => s !== 'S2' || r >= 2, blockers: 2 });   // two blockers: no extra round for a single one
+    const id = newProject('plan_review');
+    J.setRounds(id, { chunkRounds: 1 });
+    await J.approve(id);
+    assert.equal(J.load(id).pipeline.chunks!.C2.state, 'failed');
+    calls = [];
+    await J.message(id, 'the seam at S2 is fine if you soften it');
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    assert.deepEqual(calls, ['fix:C2', 'shot_qa:S2:2', 'assemble', 'critique']);
+  });
+
+  test('resuming a character stopped at its limit fixes it first (the reused review is not a round)', async () => {
+    S = base({ chars: ['hero', 'cat'], castPass: (w, r) => w !== 'cat' || r >= 2 });
+    const id = newProject('plan_review');
+    J.setRounds(id, { castRounds: 1 });
+    await J.approve(id);
+    assert.equal(J.load(id).pipeline.cast!.chars!.cat.state, 'failed');
+    calls = [];
+    await J.resume(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    assert.deepEqual(calls.filter((c) => c.startsWith('cast')), ['cast_fix:cat', 'cast_qa:cat', 'cast_qa:lineup']);
+  });
+});
+
+describe('contract check', () => {
+  test('a review that comes out unreadable goes back to its reviewer once, then the line goes on', async () => {
+    S = base({ broken: (s) => (s === 'shot_qa:S1:1' ? 'once' : null) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
+    assert.ok(calls.indexOf('fix_format') > calls.indexOf('shot_qa:S1:1'));   // reviews run side by side: not necessarily the very next call
+    assert.equal(calls.filter((c) => c === 'fix_format').length, 1);
+  });
+
+  test('a production plan that stays broken stops the job and says what is wrong', async () => {
+    S = base({ broken: (s) => (s === 'setup' ? 'always' : null) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    const j = J.load(id);
+    assert.equal(j.stage, 'error');
+    assert.match(j.error || '', /格式不對.*build\/production\.json: not valid JSON/);
+    assert.ok(!calls.some((c) => c.startsWith('build:')));
   });
 });

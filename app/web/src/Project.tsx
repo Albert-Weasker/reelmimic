@@ -34,7 +34,9 @@ export function Project({ id }: { id: string }) {
     let t: ReturnType<typeof setTimeout> | undefined, alive = true;
     const load = () => api.project(id).then((d) => { if (alive) { setS(d as SnapshotView); setV((x) => x + 1); } }).catch(() => {});
     load();
-    const off = api.events(id, () => { clearTimeout(t); t = setTimeout(load, 350); });
+    // also reload when the stream (re)opens: whatever changed while it was down (a restart marking the job interrupted) arrives no other way
+    const soon = () => { clearTimeout(t); t = setTimeout(load, 350); };
+    const off = api.events(id, soon, soon);
     return () => { alive = false; off(); clearTimeout(t); };
   }, [id]);
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === 'Escape' && setZoom(null); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, []);
@@ -91,7 +93,8 @@ export function Project({ id }: { id: string }) {
 
 function LiveBanner({ id, job }: { id: string; job: Job }) {
   const now = useNow(true);
-  const { live } = useMemo(() => buildThread(job), [job.log?.length, job.stage]);
+  // the server keeps the latest 600 log entries, so the length stops changing: key on the last entry
+  const { live } = useMemo(() => buildThread(job), [job.log?.[job.log.length - 1]?.ts, job.stage]);
   const since = live.length ? Math.min(...live.map((b) => new Date(b.start).getTime())) : new Date(job.updatedAt!).getTime();
   const detail = job.stage === 'producing' || job.stage === 'critiquing' || job.stage === 'revising' ? PIPE_DO[job.pipeline?.phase ?? ''] : null;
   return (

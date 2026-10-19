@@ -15,8 +15,18 @@ Browser (app/web, React + Vite)
 Server (app/server)
    ├─ index.ts          HTTP API, uploads, SSE, project files (/files/:id/*)
    ├─ env.ts            loads ~/.reelmimic/secrets.json at startup
-   ├─ jobs.ts           workflow state machine + production scheduling (order, parallelism, pausing)
-   ├─ outputs.ts        checks agent outputs: the JSON files a step must write parse and have the shape jobs.ts reads
+   ├─ jobs.ts           the user's actions (start, approve, message, retry…), project list and snapshot
+   ├─ preprod.ts        analysis → style → plan (characters and assets drafted in parallel)
+   ├─ production.ts     setup → cast gate → shot line (parallel builders, per-shot review) → assemble
+   ├─ prerender.ts      background render of passed segments (engines with a frame cache), stopped by Cancel
+   ├─ cast.ts           cast gate: per-character review/fix in parallel, line-up check, serial fallback
+   ├─ final.ts          final panel: critic ⇄ revise
+   ├─ review.ts         the review → fix loop every gate shares (round limits, needs_user, pass rule)
+   ├─ turn.ts           one agent turn: global slots (reviews and fixes jump the queue), required-file check, failure reason
+   ├─ contract.ts       format check for the JSON files agents write (plan, production, reviews, fixes, critique)
+   ├─ runner.ts         one flow per project; Cancel stops every agent and tool process it started (whole process tree)
+   ├─ store.ts          job.json (written atomically), event log, live-update bus, round limits and quality presets
+   ├─ inputs.ts         required inputs and lyric timing
    ├─ prompts.ts        the instructions each step gives its agent (edits apply on the next turn, no restart)
    └─ agents/index.ts   agent adapters: Claude Code / Codex → one event stream
    │  spawn (prompt on stdin, events streamed on stdout)
@@ -50,10 +60,9 @@ new → analyzing → styling → planning → plan_review ⇄ replanning
 | revising | director agent | `out/video.mp4`, `out/check/fixes.json` (before/after crops for every fix) |
 
 **Files decide completion**: `turn()` records the modification time of the required files and checks after the agent
-turn whether they were updated, and that the JSON ones parse and have the shape the orchestrator reads (`outputs.ts`).
-A file that does not gets one repair turn in the same agent conversation (it knows what it meant); if it is still
-broken the job stops in `error` naming the file, and the step can be retried. Without this a critique.json with a
-trailing comma read as "no must-fix items" and the film was delivered as passed.
+turn whether they were updated; if not, the job stops in `error` and the step can be retried. Updated JSON files are
+then checked against the contract (`contract.ts`, only the fields the server acts on): a broken one goes back to the same
+agent conversation once to be rewritten, and if it is still broken the step stops in `error` naming the bad fields.
 On server start, jobs still marked as working are flagged as interrupted (`recoverOrphans`); a retry continues from the
 current files.
 
@@ -117,8 +126,8 @@ The full format is in `.claude/skills/video-clone/CONTRACT.md`. In short:
 
 ```
 projects/<id>/
-  job.json               managed by the server: stage, session ids, chat, event log (latest 600), production state
-  logs/events.jsonl      complete event log (never truncated)
+  job.json               managed by the server: stage, session ids, chat, production state
+  logs/events.jsonl      complete event log (never truncated; the UI gets the latest 600)
   brief.md / inputs/     the user's brief and uploaded inputs
   analysis/              report.json, STYLE.md, route.json, lyrics/subs.lrc|json
   plan.json              the pre-production plan (the web app's main view)
@@ -156,6 +165,7 @@ builder (kept across fix rounds); reviewers always start fresh.
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/api/health` | `{ ok: true }` once the server is listening (`start.bat` / `start.sh` wait for it before opening the browser) |
 | GET | `/api/agents` | detect installed agent CLIs |
 | GET/POST | `/api/projects` | list / create (multipart: reference or url, brief, agent, lang, inputs) |
 | GET | `/api/projects/:id` | project snapshot (everything the web app needs) |

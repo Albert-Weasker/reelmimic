@@ -13,7 +13,18 @@ ReelMimic 由三层组成：**网站**（React）、**服务器**（Node，负�
 服务器（app/server）
    ├─ index.ts          HTTP API、上传、SSE、提供项目文件（/files/:id/*）
    ├─ env.ts            启动时加载 ~/.reelmimic/secrets.json
-   ├─ jobs.ts           流程状态机 + 生产线调度（谁先谁后、平行几个、何时暂停）
+   ├─ jobs.ts           用户的操作（开始、批准、留言、重试…）、项目列表与快照
+   ├─ preprod.ts        分析 → 风格 → 企划（角色与素材平行打草稿）
+   ├─ production.ts     制作准备 → 角色关 → 分段制作（多个 builder 平行、每镜做完就审）→ 组装
+   ├─ prerender.ts      通过审查的段落在后台先渲染（有帧缓存的引擎），取消时一起停
+   ├─ cast.ts           角色关：每个角色平行审查修正、并排检查、串行版
+   ├─ final.ts          最后评审 ⇄ 修改
+   ├─ review.ts         每一关共用的「审查 → 修正」循环（轮数上限、needs_user、通过规则）
+   ├─ turn.ts           一次 agent 回合：全局名额（审查与修正插队）、必须文件检查、失败原因
+   ├─ contract.ts       agent 写的 JSON 文件格式检查（企划、制作规划、审查、修正、评审）
+   ├─ runner.ts         每个项目同时只跑一条流程；取消会停掉它开的所有 agent 与工具进程（整棵进程树）
+   ├─ store.ts          job.json、事件记录、实时更新、轮数设置
+   ├─ inputs.ts         需要用户提供的素材、歌词对时
    ├─ prompts.ts        每个步骤给 agent 的指令（改档后下一轮就生效，不用重启）
    └─ agents/index.ts   agent 转接层：Claude Code / Codex → 统一事件
    │  spawn（stdin 给指令，stdout 串流事件）
@@ -46,7 +57,7 @@ new → analyzing → styling → planning → plan_review ⇄ replanning
 | critiquing | 独立评审（全新对话） | `out/check/critique.json` |
 | revising | 导演 agent | `out/video.mp4`、`out/check/fixes.json`（每项附修改前后截屏） |
 
-**完成的判准是文件**：`turn()` 记下必须文件的修改时间，agent 回合结束后检查它们有没有被更新；没有就停在 `error`，可以「重试这一步」。
+**完成的判准是文件**：`turn()` 记下必须文件的修改时间，agent 回合结束后检查它们有没有被更新；没有就停在 `error`，可以「重试这一步」。更新过的 JSON 文件再按合约检查（`contract.ts`，只查服务器会用到的字段）：格式不对就请同一个 agent 对话重写一次，还是不对这一步就停在 `error`，并列出哪些字段有问题。
 服务器重启时，还标在工作中的项目会被标成「已中断」（`recoverOrphans`），重试会从目前的文件接着做。
 
 ## 2. 生产线（核准之后）
@@ -85,8 +96,8 @@ assemble（导演）：组装、混音、全片输出
 
 ```
 projects/<id>/
-  job.json               服务器管理：阶段、session id、对话、事件纪录（最近 600 笔）、生产线状态
-  logs/events.jsonl      完整事件纪录（不截断）
+  job.json               服务器管理：阶段、session id、对话、生产线状态
+  logs/events.jsonl      完整事件纪录（不截断；界面显示最近 600 笔）
   brief.md / inputs/     用户的需求原文与上传的素材
   analysis/              report.json、STYLE.md、route.json、lyrics/subs.lrc|json
   plan.json              前制企划（网站的主要画面）
@@ -119,6 +130,7 @@ projects/<id>/
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
+| GET | `/api/health` | 服务器开始接受连接后回 `{ ok: true }`（`start.bat`／`start.sh` 等到它响应才打开浏览器） |
 | GET | `/api/agents` | 侦测已安装的 agent CLI |
 | GET/POST | `/api/projects` | 列表／创建（multipart：reference 或 url、brief、agent、lang、inputs） |
 | GET | `/api/projects/:id` | 项目快照（网站需要的所有数据） |
