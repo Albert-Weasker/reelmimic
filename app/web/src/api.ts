@@ -1,5 +1,5 @@
 // Thin client for the ReelMimic server.
-import type { AgentStatus, Config, ProjectSummary, RoundKey, ServerEvent, Snapshot } from '../../shared/types.ts';
+import type { AgentStatus, Config, ProjectSummary, Quality, RoundKey, ServerEvent, Snapshot } from '../../shared/types.ts';
 import type { MessageMeta } from './types.ts';
 type Ok = { ok: true };
 const j = async <T>(r: Response): Promise<T> => { const d: unknown = await r.json().catch(() => ({})); if (!r.ok) throw new Error((d as { error?: string }).error || r.statusText); return d as T; };
@@ -17,6 +17,7 @@ export const api = {
   waive: (id: string, input: string) => fetch(`/api/projects/${id}/waive`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }) }).then(j<Snapshot>),
   config: () => fetch('/api/config').then(j<Config>),
   settings: (id: string, body: Partial<Record<RoundKey, number | ''>>) => fetch(`/api/projects/${id}/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j<Snapshot>),
+  quality: (id: string, quality: Quality) => fetch(`/api/projects/${id}/quality`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ quality }) }).then(j<Snapshot>),
   accept: (id: string) => fetch(`/api/projects/${id}/accept`, { method: 'POST' }).then(j<Ok>),
   resume: (id: string) => fetch(`/api/projects/${id}/resume`, { method: 'POST' }).then(j<Ok>),
   cancel: (id: string) => fetch(`/api/projects/${id}/cancel`, { method: 'POST' }).then(j<Ok>),

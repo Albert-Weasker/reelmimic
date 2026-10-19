@@ -7,6 +7,9 @@ const ok = (f: string, v: unknown) => assert.deepEqual(checkFile(f, JSON.stringi
 const bad = (f: string, v: unknown, re: RegExp) => { const p = checkFile(f, typeof v === 'string' ? v : JSON.stringify(v)); assert.ok(p.some((x) => re.test(x)), p.join('\n') || 'no problems'); };
 
 describe('checkFile', () => {
+  test('a byte-order mark is not an error (PowerShell writes one)', () => {
+    assert.deepEqual(checkFile('out/check/critique.json', '﻿' + JSON.stringify({ pass: true, must_fix: [] })), []);
+  });
   test('any .json must parse; files without a schema need nothing more', () => {
     bad('out/check/shots/C1.done.json', '{ oops', /not valid JSON/);
     ok('out/check/shots/C1.done.json', { anything: 1 });

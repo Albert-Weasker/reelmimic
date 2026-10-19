@@ -41,3 +41,4 @@ Thumbs.db
 .claude/skills/remotion-studio/
 .claude/skills/remotion-upgrade/
 .claude/skills/media-use/audio/assets/sfx/*.mp3
+.pytest_cache/

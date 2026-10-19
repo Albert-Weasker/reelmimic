@@ -18,6 +18,9 @@ building one more.
     `<!-- SCENES -->` with `<script src="src/scenes/demo.js"></script>`.
   - `package.json` → `template/package.json` (rename `name`; add deps only if truly needed).
   - `new_project.sh` → `scripts/new_project.sh`.
+- `.claude/skills/video-clone/assets/score/score.js` — the Motion Score runtime (docs/COMPILER.md). Projects compile
+  their score into `build/src/score.js` and load it before the scenes; scenes take the camera from
+  `Score.cam(id, t)` → `camBegin(c.x, c.y, c.zoom, c.rot)`. Keep `camBegin` semantics unchanged so this keeps working.
 - `.claude/skills/painted-animation/` — the reference engine. Read its `SKILL.md` and `template/ANIMATION_GUIDE.md`
   for the standard of craft expected (animation principles, reads, review loop). Don't copy its Clawd character.
 

@@ -8,7 +8,7 @@ import { castGate } from './cast.ts';
 import { prerender, resetPrerenders, waitPrerenders } from './prerender.ts';
 import { blockerFree, reviewFix, sharedItems } from './review.ts';
 import { aborted } from './runner.ts';
-import { CONFIG, L, chat, collectNeeds, dirOf, load, log, pause, pipe, readJSON, rounds, setStage } from './store.ts';
+import { CONFIG, L, chat, collectNeeds, dirOf, load, log, pause, pipe, preset, readJSON, rounds, setStage } from './store.ts';
 import { fail, step, turn, type TurnResult } from './turn.ts';
 import type { ChunkProgress, NeedRequest, Pipeline, Plan } from '../shared/types.ts';
 import type { Chunk, ChunkReview, Production, ShotEntry } from './types.ts';
@@ -125,6 +125,13 @@ export async function production(id: string, { fresh = false } = {}): Promise<bo
         return 'ok';
       },
     });
+    if (end === 'limit' && !preset(id).pauseAtLimit) {
+      // fast mode: carry on with what is left (the final review sees the whole film; the user can upgrade the mode)
+      const left = last!.bad.flatMap((e) => e.issues || []).filter((x) => x.severity !== 'polish').length;
+      set({ state: 'passed', open: last!.bad.length, acceptedAtLimit: true }); prerender(id, c);
+      chat(id, 'system', L(id, `快速模式：${c.id} 審到上限，還有 ${left} 個問題，先繼續製作（最後評審會再看整支片）`, `Fast mode: ${c.id} reached its review limit with ${left} issue${left === 1 ? '' : 's'} left; carrying on (the final review sees the whole film)`));
+      return true;
+    }
     set(end === 'limit' ? { state: 'failed', open: last!.bad.length } : { state: STATE[end] });
     if (end === 'passed') prerender(id, c);
     return end === 'passed';

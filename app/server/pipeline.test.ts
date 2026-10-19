@@ -20,7 +20,7 @@ interface Scenario {
   shotPass: (shot: string, round: number) => boolean;
   sharedFix?: (chunk: string, call: number) => boolean;    // the builder reports a shared-file problem instead
   castShared?: (char: string, call: number) => boolean;
-  critique: (round: number) => { must?: number; needs?: number; lostPeak?: boolean };
+  critique: (round: number) => { must?: number; needs?: number; lostPeak?: boolean; items?: { shot: string; issue: string }[] };
   buildDelayMs?: number;                                   // let the per-shot watcher (every 4 s) pick shots up
   prerender?: string;                                      // production.json prerender command
   blockers?: number;                                       // blocker issues in a failing shot review (default 1)
@@ -77,7 +77,7 @@ function outputs(prompt: string, dir: string): [string, Record<string, unknown>]
   if (m(/## 步驟：組裝成片/)) return ['assemble', { 'out/video.mp4': 'mp4' }];
   if (m(/獨立評審/)) {
     const round = bump(`critique-${dir}`), c = S.critique(round);
-    return [`critique`, { 'out/check/critique.json': { peaks: [{ id: 'P1', verdict: c.lostPeak ? 'ref_better' : 'equal', why: 'smaller hit' }], must_fix: Array.from({ length: c.must || 0 }, (_, i) => ({ shot: 'S1', issue: `must ${i}` })), needs_user: Array.from({ length: c.needs || 0 }, () => ({ kind: 'text', issue: 'confirm the lyric' })) } }];
+    return [`critique`, { 'out/check/critique.json': { peaks: [{ id: 'P1', verdict: c.lostPeak ? 'ref_better' : 'equal', why: 'smaller hit' }], must_fix: c.items ?? Array.from({ length: c.must || 0 }, (_, i) => ({ shot: 'S1', issue: `must ${i}` })), needs_user: Array.from({ length: c.needs || 0 }, () => ({ kind: 'text', issue: 'confirm the lyric' })) } }];
   }
   if (m(/## 步驟：修改成片/)) return ['revise', { 'out/video.mp4': 'mp4', 'out/check/fixes.json': [{ status: 'fixed' }] }];
   throw new Error('fake agent: unknown step\n' + prompt.slice(0, 300));
@@ -127,7 +127,7 @@ function newProject(stage: 'plan_review' | 'error', extra: Record<string, unknow
   const id = `p-${++n}`;
   J.createJob({ id, title: 't', agent: 'claude', brief: 'make a video', reference: { type: 'url', src: 'https://example.com' } });
   const f = join(J.dirOf(id), 'job.json');
-  writeFileSync(f, JSON.stringify({ ...J.load(id), stage, ...extra }));
+  writeFileSync(f, JSON.stringify({ ...J.load(id), quality: 'fine', stage, ...extra }));   // most tests describe the fine line
   if (stage === 'plan_review') writeFileSync(join(J.dirOf(id), 'plan.json'), JSON.stringify({ title: 'T', version: 1 }));
   return id;
 }
@@ -174,9 +174,21 @@ describe('production', () => {
     assert.deepEqual(calls.filter((c) => c.startsWith('cast')), ['cast_qa:serial', 'cast_fix:serial', 'cast_qa:serial']);
     assert.ok(calls.indexOf('fix:C2') > calls.indexOf('shot_qa:S2:1'));
     assert.ok(calls.includes('shot_qa:S2:2'));
-    assert.ok(!calls.includes('fix:C1'));
-    assert.deepEqual(calls.slice(-3), ['critique', 'revise', 'critique']);
+    assert.ok(!calls.slice(0, calls.indexOf('critique')).includes('fix:C1'));   // C1 passed its shot review first time
+    // the final review's item is in S1: its builder fixes it, then the director renders the film
+    assert.deepEqual(calls.slice(-4), ['critique', 'fix:C1', 'revise', 'critique']);
     assert.equal(J.load(id).critiqueRounds, 2);
+  });
+
+  test('final must-fix items: one segment each to its builder in parallel, across segments to the director', async () => {
+    // round 1: one item in each segment and one across both
+    S = base({ critique: (r) => (r === 1 ? { items: [{ shot: 'S1', issue: 'pose pops' }, { shot: 'S2', issue: 'arm floats' }, { shot: 'S1/S2', issue: 'silhouette' }] } : {}) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    const fin = calls.slice(calls.indexOf('critique'));
+    assert.deepEqual(fin.slice(1, 3).sort(), ['fix:C1', 'fix:C2']);
+    assert.equal(fin[3], 'revise');
+    assert.equal(J.load(id).stage, 'done', J.load(id).error || '');
   });
 
   test('a climax that loses to the reference is sent back even with no must-fix listed', async () => {
@@ -211,6 +223,21 @@ describe('production', () => {
     await J.approve(id);
     assert.equal(calls.filter((c) => c === 'revise').length, 4);
     assert.equal(J.load(id).lastCritique?.pass, true);
+  });
+
+  test('a long list that halves keeps revising past the limit (9 → 3 → 0)', async () => {
+    S = base({ critique: (r) => ({ must: [9, 3, 0][r - 1] }) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).lastCritique?.pass, true);
+  });
+
+  test('a list that shrinks slowly and stays long stops at the limit (9 → 7 → 6)', async () => {
+    S = base({ critique: (r) => ({ must: [9, 7, 6, 5][r - 1] ?? 5 }) });
+    const id = newProject('plan_review');
+    await J.approve(id);
+    assert.equal(J.load(id).lastCritique?.pass, false);
+    assert.equal(calls.filter((c) => c === 'revise').length, 2);
   });
 
   test('a must-fix list that stops shrinking stops at the limit', async () => {
@@ -353,6 +380,70 @@ describe('pauses', () => {
   });
 });
 
+describe('final review routing', () => {
+  test('items reach the shots they name, matched whole: S10 is not S1', async () => {
+    const { shotIssues } = await import('./final.ts');
+    const by = Object.fromEntries(shotIssues([{ shot: 'S1', issue: 'a' }, { shot: 'S10', issue: 'b' }, { shot: 'S11/S1', issue: 'c' }]).map((e) => [e.id, (e.issues || []).map((x) => x.issue)]));
+    assert.deepEqual(by, { S1: ['a', 'c'], S10: ['b'], S11: ['c'] });
+  });
+  test('a job.json temp file left by a crash is swept at startup', () => {
+    const id = newProject('plan_review'), tmp = join(J.dirOf(id), 'job.json.12345.tmp');
+    writeFileSync(tmp, '{');
+    J.recoverOrphans();
+    assert.ok(!existsSync(tmp));
+  });
+});
+
+describe('quality modes', () => {
+  test('fast: a segment and a character at their limit carry on, and the film is delivered without pausing', async () => {
+    S = base({ castPass: () => false, shotPass: (s) => s !== 'S2', critique: () => ({ must: 3 }) });
+    const id = newProject('plan_review', { quality: 'fast' });
+    await J.approve(id);
+    const j = J.load(id);
+    assert.equal(j.stage, 'done', j.error || '');
+    assert.equal(j.pipeline.chunks!.C2.state, 'passed');
+    assert.equal(j.pipeline.chunks!.C2.acceptedAtLimit, true);
+    assert.ok(calls.includes('assemble'));
+    assert.equal(calls.filter((c) => c === 'revise').length, J.CONFIG.presets.fast.finalRounds);   // a list that never shrinks: no extra rounds
+    assert.match(j.chat.at(-1)!.text, /快速模式交件|Fast mode delivered/);
+  });
+
+  test('fast: a shrinking list gets no extra rounds past the limit', async () => {
+    S = base({ critique: (r) => ({ must: [3, 1, 0][r - 1] ?? 0 }) });
+    const id = newProject('plan_review', { quality: 'fast' });
+    await J.approve(id);
+    assert.equal(calls.filter((c) => c === 'revise').length, 1);
+    assert.equal(J.load(id).lastCritique?.pass, false);
+  });
+
+  test('upgrading a delivered fast film sends it back to the final review under the new bar', async () => {
+    let critiques = 0;
+    S = base({ critique: () => ({ must: ++critiques <= 2 ? 2 : 0 }) });
+    const id = newProject('plan_review', { quality: 'fast' });
+    await J.approve(id);
+    assert.equal(J.load(id).lastCritique?.pass, false);
+    calls = [];
+    assert.equal(J.setQuality(id, 'fine').upgrade, true);
+    await J.critique(id);
+    const j = J.load(id);
+    assert.equal(j.quality, 'fine');
+    assert.equal(j.lastCritique?.pass, true);
+    assert.deepEqual(calls, ['critique']);
+    assert.equal(J.setQuality(id, 'fast').upgrade, false);   // going down never re-runs anything
+  });
+
+  test('the prompts follow the mode: fast blocks only what a viewer sees at once', async () => {
+    const { prompts } = await import('./prompts.ts');
+    const v = { dir: 'projects/x', brief: 'b', inputs: [], config: J.CONFIG, lang: 'zh-TW' as const, chunk: { id: 'C1', shots: ['S1'] }, shots: ['S1'], round: 1, out: 'o.json' };
+    const fast = prompts.shot_qa({ ...v, quality: 'fast' }), fine = prompts.shot_qa({ ...v, quality: 'fine' });
+    assert.match(fast, /品質模式：\*\*快速/);
+    assert.match(fine, /都是 blocker/);
+    assert.doesNotMatch(fast, /都是 blocker/);
+    assert.match(prompts.critique({ ...v, quality: 'fast', round: 1 }), /品質模式：快速/);
+    assert.doesNotMatch(prompts.critique({ ...v, quality: 'standard', round: 1 }), /品質模式：快速/);
+  });
+});
+
 describe('no characters', () => {
   test('a piece with no cast (typography, motion graphics) skips the cast sheet and the cast gate', async () => {
     S = base({ chars: [] });
@@ -471,7 +562,7 @@ describe('round limits', () => {
     await J.approve(id);
     const j = J.load(id);
     assert.equal(j.stage, 'done');
-    assert.deepEqual(calls.slice(-3), ['critique', 'revise', 'critique']);
+    assert.deepEqual(calls.slice(-4), ['critique', 'fix:C1', 'revise', 'critique']);   // S1's item goes to its builder first
     assert.match(j.chat.at(-1)!.text, /自動修改上限|fix limit/);
   });
 

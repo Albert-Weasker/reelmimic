@@ -12,7 +12,24 @@ export const ROUND_KEYS = ['castRounds', 'chunkRounds', 'finalRounds'] as const;
 export type RoundKey = (typeof ROUND_KEYS)[number];
 export type Rounds = Record<RoundKey, number>;
 
+// Quality mode, chosen per project: how strictly reviewers check and how many fix rounds each gate gets.
+// fast: only defects a viewer sees at once block, few rounds, never pauses at a limit (delivers and lists what is left);
+// standard: per-frame checks on the climaxes; fine: per-frame checks on every pose change, the climaxes must beat the reference.
+export const QUALITIES = ['fast', 'standard', 'fine'] as const;
+export type Quality = (typeof QUALITIES)[number];
+export interface QualityPreset extends Rounds {
+  converge: number;         // extra final-review rounds while the must-fix list keeps shrinking
+  pauseAtLimit: boolean;    // at a round limit: pause and ask the user (true) or carry on and list what is left (false)
+}
+// Minutes from plan approval to the finished film, for a 30 s film (scaled by length in the UI). From real runs:
+// fine 167 and 222 min (6upkv, v8z8p); fast 79 min (hvuc0, same inputs as v8z8p); standard is an estimate until measured.
+export const QUALITY_MINUTES: Record<Quality, [number, number]> = { fast: [60, 90], standard: [100, 150], fine: [170, 230] };
+// Which of those come from real runs (the others are shown as estimates). New projects default to a measured mode.
+export const QUALITY_MEASURED: Record<Quality, boolean> = { fast: true, standard: false, fine: true };
+export const DEFAULT_QUALITY: Quality = 'fine';
+
 export interface Config extends Rounds {
+  presets: Record<Quality, QualityPreset>;
   builders: number;
   maxAgentsGlobal: number;
   maxReviews: number;
@@ -61,10 +78,11 @@ export interface ChunkProgress {
   fixFirst?: boolean;
   open?: number;
   acceptedByUser?: boolean;
+  acceptedAtLimit?: boolean;   // fast mode: the round limit was reached and production carried on with `open` issues
 }
 
 export type CastCharState = 'queued' | 'reviewing' | 'fixing' | 'waiting_shared' | 'needs_user' | 'passed' | 'failed' | 'error';
-export interface CastCharProgress { state: CastCharState; round: number; issues?: number }
+export interface CastCharProgress { state: CastCharState; round: number; issues?: number; acceptedAtLimit?: boolean }
 
 export interface CastProgress {
   round: number;
@@ -74,6 +92,7 @@ export interface CastProgress {
   lineup?: boolean;
   chars?: Record<string, CastCharProgress>;
   acceptedByUser?: boolean;
+  acceptedAtLimit?: boolean;
 }
 
 export interface Pipeline {
@@ -92,6 +111,7 @@ export interface Job {
   lang: Lang;
   reference: Reference;
   settings: Partial<Rounds>;
+  quality?: Quality;   // missing on projects made before modes existed: they ran the 'fine' line
   stage: Stage;
   failed?: Stage | null;
   error?: string | null;
@@ -176,12 +196,14 @@ export interface Snapshot {
   checks: string[];
   video: string | null;
   critique: Record<string, unknown> | null;
+  styleDistance: Record<string, unknown> | null;   // out/check/style_distance.json: measured film vs reference (compare.py)
   cast: { sheets: string[]; review: Review | null };
   shots: string[];
   production: Record<string, unknown> | null;
   lyrics: unknown;
   requiredInputs: RequiredInput[];
   rounds: { values: Rounds; defaults: Rounds; min: number; max: number };
+  quality: Quality;
   inputs: string[];
 }
 

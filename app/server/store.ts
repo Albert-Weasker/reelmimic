@@ -1,10 +1,10 @@
 // The job's files: projects/<id>/job.json is the state, logs/events.jsonl the full event log. Everything that reads or
 // writes them goes through here, and every write is announced on `bus` (the SSE stream and notify.ts listen).
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, readdirSync, statSync, statfsSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { ROUND_KEYS } from '../shared/types.ts';
-import type { ChatMessage, Config, Job, LogEntry, LogEvent, Need, NeedRequest, Pipeline, RoundKey, Rounds, Stage } from '../shared/types.ts';
+import { QUALITIES, ROUND_KEYS } from '../shared/types.ts';
+import type { ChatMessage, Config, Job, LogEntry, LogEvent, Need, NeedRequest, Pipeline, Quality, QualityPreset, RoundKey, Rounds, Stage } from '../shared/types.ts';
 
 export const ROOT = join(import.meta.dirname, '..', '..');
 export const PROJECTS = process.env.REELMIMIC_PROJECTS ? resolve(process.env.REELMIMIC_PROJECTS) : join(ROOT, 'projects');   // override: tests, a second checkout
@@ -12,11 +12,21 @@ export const SCRIPTS = join(ROOT, '.claude', 'skills', 'video-clone', 'scripts')
 export const PY = process.env.PYTHON || 'python';
 export const noPython = (e: Error) => `${PY} could not be started (${e.message}). Install Python 3.10+, or set PYTHON=/path/to/python`;
 
-export const CONFIG: Config = {
-  builders: +(process.env.BUILDERS || 6),          // parallel shot builders per project (12 cores / 32 GB measured)
+const FINE: Rounds = {
   castRounds: +(process.env.CAST_ROUNDS || 3),     // cast gate: review/fix rounds before asking the user
   chunkRounds: +(process.env.CHUNK_ROUNDS || 3),   // shot line: review/fix rounds per chunk
   finalRounds: +(process.env.FINAL_ROUNDS || 2),   // final panel: automatic revise rounds
+};
+export const CONFIG: Config = {
+  ...FINE,                                          // the 'fine' line (projects made before modes existed)
+  // Quality modes (shared/types.ts). The prompts change with the mode too: what blocks, and where every frame is checked.
+  presets: {
+    // a round is one review: 2 = review, fix, review again
+    fast: { castRounds: 2, chunkRounds: 2, finalRounds: 1, converge: 0, pauseAtLimit: false },
+    standard: { castRounds: 2, chunkRounds: 3, finalRounds: 2, converge: 1, pauseAtLimit: true },
+    fine: { ...FINE, converge: 3, pauseAtLimit: true },
+  },
+  builders: +(process.env.BUILDERS || 6),          // parallel shot builders per project (12 cores / 32 GB measured)
   maxAgentsGlobal: +(process.env.MAX_AGENTS || 12), // all projects together (CLI rate limits, CPU/GPU for renders)
   maxReviews: +(process.env.MAX_REVIEWS || 4),      // shot reviews at once per project: each one opens Chrome to grab frames;
                                                     // 13 at once meant 80–200 Chrome processes and screenshot timeouts
@@ -28,7 +38,10 @@ export const CONFIG: Config = {
 // Review/fix round limits: CONFIG holds the defaults; a project can set its own (job.settings), read at every check so a
 // change applies from the next round on. When a limit is reached the job pauses for the user instead of looping.
 export const ROUND_RANGE = { min: 1, max: 10 };
-export function rounds(id: string): Rounds { const s = load(id).settings || {}; return Object.fromEntries(ROUND_KEYS.map((k) => [k, s[k] ?? CONFIG[k]])) as Rounds; }
+export const qualityOf = (j: Job): Quality => (QUALITIES.includes(j.quality as Quality) ? j.quality! : 'fine');
+export const preset = (id: string): QualityPreset => CONFIG.presets[qualityOf(load(id))];
+export const presetRounds = (q: Quality) => Object.fromEntries(ROUND_KEYS.map((k) => [k, CONFIG.presets[q][k]])) as Rounds;
+export function rounds(id: string): Rounds { const j = load(id), s = j.settings || {}, p = CONFIG.presets[qualityOf(j)]; return Object.fromEntries(ROUND_KEYS.map((k) => [k, s[k] ?? p[k]])) as Rounds; }
 // Validates { castRounds?, chunkRounds?, finalRounds? } (whole numbers 1–10; '' / null = back to the default). Throws on bad input.
 export function cleanRounds(input: Record<string, unknown> = {}) {
   const out: Partial<Record<RoundKey, number | null>> = {};
@@ -58,7 +71,12 @@ export const CANCELLED = { zh: '已取消', en: 'Cancelled' };   // the error te
 export function load(id: string): Job { const j = JSON.parse(readFileSync(jpath(id), 'utf8')); j.log = []; return j; }
 export function save(job: Job) {
   recentLog(job.id);   // first touch: a project from before events.jsonl still has its log in job.json; move it out before it's dropped
-  job.updatedAt = now(); writeFileSync(jpath(job.id), JSON.stringify({ ...job, log: undefined }, null, 1)); bus.emit('job', job.id, { type: 'job', job }); return job;
+  // atomic: a full disk once truncated job.json to 0 bytes mid-write and the project could no longer be opened
+  job.updatedAt = now();
+  const f = jpath(job.id), tmp = `${f}.${process.pid}.tmp`;
+  try { writeFileSync(tmp, JSON.stringify({ ...job, log: undefined }, null, 1)); renameSync(tmp, f); }
+  catch (e) { try { rmSync(tmp, { force: true }); } catch {} throw e; }
+  bus.emit('job', job.id, { type: 'job', job }); return job;
 }
 export function update(id: string, fn: (j: Job) => void) { const j = load(id); fn(j); return save(j); }
 const LOG_KEEP = 600, TAIL_BYTES = 1 << 20;
@@ -112,7 +130,8 @@ export function collectNeeds(id: string, items: NeedRequest[] | undefined, from:
   return add.length;
 }
 
-export const readJSON = <T>(p: string): T | null => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+// a byte-order mark (PowerShell writes one) is fine
+export const readJSON = <T>(p: string): T | null => { try { const t = readFileSync(p, 'utf8'); return JSON.parse(t.charCodeAt(0) === 0xfeff ? t.slice(1) : t); } catch { return null; } };
 export const readText = (p: string): string | null => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
 export const oneOf = (v: string | null | undefined, ...L: string[]) => !!v && L.includes(v);
 export const mtime = (p: string) => (existsSync(p) ? statSync(p).mtimeMs : 0);

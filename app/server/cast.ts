@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { blockerFree, reviewFix, sharedItems, type LoopEnd } from './review.ts';
-import { L, chat, collectNeeds, dirOf, pause, pipe, readJSON, rounds, setStage } from './store.ts';
+import { L, chat, collectNeeds, dirOf, pause, pipe, preset, readJSON, rounds, setStage } from './store.ts';
 import { fail, turn, type TurnResult } from './turn.ts';
 import type { CastCharProgress, Pipeline, Review } from '../shared/types.ts';
 import type { CastMember, Production, SharedItem } from './types.ts';
@@ -52,6 +52,8 @@ export async function castGate(id: string, prev: Pipeline): Promise<boolean> {
         return 'handoff';
       },
     });
+    // fast mode: a character at its limit carries on (the issues stay listed; the user can upgrade the mode)
+    if (end === 'limit' && !preset(id).pauseAtLimit) { setC(c.id, { state: 'passed', issues: (last?.issues || []).length, acceptedAtLimit: true }); return 'passed'; }
     setC(c.id, end === 'limit' ? { state: 'failed', issues: (last?.issues || []).length } : { state: STATE[end] });
     return RESULT[end];
   };
@@ -108,6 +110,11 @@ async function castSerial(id: string, prev: Pipeline, firstReview?: Review | nul
   });
   if (end === 'error') return fail(id, 'producing', broken!);
   if (end === 'needs') return pause(id);
+  if (end === 'limit' && !preset(id).pauseAtLimit) {
+    pipe(id, (p) => { p.cast!.pass = true; p.cast!.state = 'passed'; p.cast!.acceptedAtLimit = true; });
+    chat(id, 'system', L(id, `快速模式：角色關審了 ${round} 輪，還有問題沒修，先繼續製作`, `Fast mode: characters had ${round} review rounds with issues left; carrying on`));
+    return true;
+  }
   if (end === 'limit') {
     pipe(id, (p) => { p.cast!.state = 'failed'; });
     chat(id, 'system', L(id, `角色關 ${round} 輪仍未通過，請你看角色設定圖決定`, `Characters still not passing after ${round} rounds. Please check the character sheets and decide`));

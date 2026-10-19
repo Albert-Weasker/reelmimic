@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode, TextareaHTMLAttributes } from 'react';
-import type { RoundKey, Rounds } from '../../shared/types.ts';
+import { QUALITIES, QUALITY_MEASURED, QUALITY_MINUTES } from '../../shared/types.ts';
+import type { Quality, RoundKey, Rounds } from '../../shared/types.ts';
 
 // ---------- icons (SF-Symbols-like strokes) ----------
 const P = {
@@ -23,6 +24,7 @@ const P = {
   search: 'M10.5 4.5a6 6 0 1 1 0 12 6 6 0 0 1 0-12ZM15 15l5 5',
   image: 'M4 5h16v14H4zM4 16l5-5 4 4 2.5-2.5L20 17M15.5 9.2a1.2 1.2 0 1 0 0 .1',
   wand: 'M5 19 16 8M14 6l4 4M18 3v3M16.5 4.5h3M20 9.5v2M19 10.5h2',
+  chart: 'M4 20h16M7 16v-5M12 16V6M17 16v-8',
   pause: 'M8.5 5.5v13M15.5 5.5v13',
   alert: 'M12 4 21 19.5H3zM12 10v4.5M12 17.2v.1',
   download: 'M12 4.5V15M7 10.5l5 5 5-5M5 19.5h14',
@@ -145,7 +147,7 @@ export const ROUND_FIELDS: [RoundKey, string, string][] = [
   ['finalRounds', '最後評審', '自動修改最多幾輪'],
 ];
 export type RoundValues = Partial<Record<RoundKey, number | null>>;
-export function RoundsEditor({ value = {}, defaults, min = 1, max = 10, onChange, disabled }: { value?: RoundValues; defaults: Rounds; min?: number; max?: number; onChange: (next: RoundValues) => void; disabled?: boolean }) {
+export function RoundsEditor({ value = {}, defaults, min = 1, max = 10, onChange, disabled, pauses = true }: { value?: RoundValues; defaults: Rounds; min?: number; max?: number; onChange: (next: RoundValues) => void; disabled?: boolean; pauses?: boolean }) {
   const set = (k: RoundKey, v: number) => onChange({ ...value, [k]: v === defaults[k] ? null : v });
   return (
     <div className="rounds">
@@ -163,9 +165,36 @@ export function RoundsEditor({ value = {}, defaults, min = 1, max = 10, onChange
         );
       })}
       <div className="rd-foot">
-        <div className="tiny faint rd-note">到了上限還沒通過，會暫停請你決定，不會一直來回修改。輪數多，品質有機會更好，但時間和 AI 用量也會增加。</div>
+        <div className="tiny faint rd-note">{pauses ? '到了上限還沒通過，會暫停請你決定，不會一直來回修改。輪數多，品質有機會更好，但時間和 AI 用量也會增加。' : '快速模式到了上限會先交件，把剩下的問題列出來；之後可以升級品質接著修。'}</div>
         {ROUND_FIELDS.some(([k]) => value[k] != null && value[k] !== defaults[k]) && <button className="btn sm plain" disabled={disabled} onClick={() => onChange(Object.fromEntries(ROUND_FIELDS.map(([k]) => [k, null])))}>恢復預設</button>}
       </div>
+    </div>
+  );
+}
+
+// ---------- quality modes ----------
+export const QUALITY_INFO: Record<Quality, { label: string; what: string }> = {
+  fast: { label: '快速', what: '先看方向：只修一眼看得出的硬傷，到上限就先交件' },
+  standard: { label: '標準', what: '大部分情況：高潮逐格檢查，其他鏡頭看連續影格' },
+  fine: { label: '精緻', what: '要交出去的成品：每個姿勢變化逐格檢查，高潮要贏參考片' },
+};
+// Minutes after approval, scaled from the 30 s figures by film length (setup and review have a fixed part).
+export function estimate(q: Quality, durS?: number | null): string {
+  const k = durS ? 0.3 + 0.7 * Math.min(durS, 180) / 30 : 1, [a, b] = QUALITY_MINUTES[q].map((m) => m * k);
+  if (b < 100) { const r = (m: number) => Math.max(5, Math.round(m / 5) * 5); return `約 ${r(a)}–${r(b)} 分鐘`; }
+  const h = (m: number) => String(Math.max(0.5, Math.round(m / 30) / 2));
+  return `約 ${h(a)}–${h(b)} 小時`;
+}
+// A row of the three modes with what each does and how long it takes. `current` marks the project's mode (project page).
+export function QualityPicker({ value, onChange, durS, current, disabled, showTime = true }: { value: Quality; onChange: (q: Quality) => void; durS?: number | null; current?: Quality; disabled?: boolean; showTime?: boolean }) {
+  return (
+    <div className="q-pick" role="radiogroup">
+      {QUALITIES.map((q) => (
+        <button key={q} role="radio" aria-checked={value === q} className={`q-opt ${value === q ? 'on' : ''}`} disabled={disabled} onClick={() => onChange(q)}>
+          <div className="row"><b>{QUALITY_INFO[q].label}</b>{current === q && <span className="tiny faint">目前</span>}<span className="grow" />{showTime && <span className="tiny q-time">{estimate(q, durS)}{!QUALITY_MEASURED[q] && <span className="faint">（預估）</span>}</span>}</div>
+          <div className="tiny muted">{QUALITY_INFO[q].what}</div>
+        </button>
+      ))}
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentKind, AgentStatus, ProjectSummary, Rounds } from '../../shared/types.ts';
+import { DEFAULT_QUALITY } from '../../shared/types.ts';
+import type { AgentKind, AgentStatus, Config, ProjectSummary, Quality } from '../../shared/types.ts';
 import { api } from './api.ts';
-import { I, BrandMark, Orb, Seg, AutoText, ago, RoundsEditor } from './ui.tsx';
+import { I, BrandMark, Orb, Seg, AutoText, ago, RoundsEditor, QualityPicker, QUALITY_INFO, estimate } from './ui.tsx';
 import type { IconName, RoundValues } from './ui.tsx';
 import { Project, Status } from './Project.tsx';
 import { LANGS, lang as initialLang, setLang } from './i18n.ts';
@@ -91,8 +92,10 @@ function Composer({ agents }: { agents?: Partial<AgentStatus> }) {
   const [file, setFile] = useState<File | null>(null), [url, setUrl] = useState(''), [linkMode, setLinkMode] = useState(false);
   const [brief, setBrief] = useState(''), [agent, setAgent] = useState<AgentKind>('claude'), [inputs, setInputs] = useState<File[]>([]);
   const [drag, setDrag] = useState(false), [busy, setBusy] = useState(false), [err, setErr] = useState('');
-  const [rounds, setRounds] = useState<RoundValues>({}), [roundsOpen, setRoundsOpen] = useState(false), [defaults, setDefaults] = useState<Rounds | null>(null);
-  useEffect(() => { api.config().then((c) => setDefaults({ castRounds: c.castRounds, chunkRounds: c.chunkRounds, finalRounds: c.finalRounds })).catch(() => {}); }, []);
+  const [rounds, setRounds] = useState<RoundValues>({}), [roundsOpen, setRoundsOpen] = useState(false), [config, setConfig] = useState<Config | null>(null);
+  const [quality, setQuality] = useState<Quality>(DEFAULT_QUALITY), [qualityOpen, setQualityOpen] = useState(false);
+  useEffect(() => { api.config().then(setConfig).catch(() => {}); }, []);
+  const preset = config?.presets?.[quality], defaults = preset ? { castRounds: preset.castRounds, chunkRounds: preset.chunkRounds, finalRounds: preset.finalRounds } : null;
   const customRounds = Object.entries(rounds).filter(([, v]) => v != null);
   const pick = useRef<HTMLInputElement>(null), assets = useRef<HTMLInputElement>(null);
   const preview = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
@@ -105,7 +108,7 @@ function Composer({ agents }: { agents?: Partial<AgentStatus> }) {
     if (!ok) return; setBusy(true); setErr('');
     const f = new FormData();
     if (file) f.append('reference', file); else f.append('url', url.trim());
-    f.append('brief', brief); f.append('agent', agent); f.append('lang', document.documentElement.lang || 'zh-TW');
+    f.append('brief', brief); f.append('agent', agent); f.append('quality', quality); f.append('lang', document.documentElement.lang || 'zh-TW');
     inputs.forEach((x) => f.append('inputs', x));
     customRounds.forEach(([k, v]) => f.append(k, String(v)));
     try { const { id } = await api.create(f); location.hash = `#/p/${id}`; } catch (e) { setErr((e as Error).message); setBusy(false); }
@@ -142,8 +145,10 @@ function Composer({ agents }: { agents?: Partial<AgentStatus> }) {
           <button className={`tool-chip ${inputs.length ? 'on' : ''}`} onClick={() => assets.current!.click()} title="配樂、歌詞、圖片、Logo、自家角色設計圖">
             <I n="clip" />素材{inputs.length > 0 && <span className="n">{inputs.length}</span>}</button>
           <input ref={assets} type="file" multiple hidden onChange={(e) => setInputs([...e.target.files!])} />
-          {defaults && <button className={`tool-chip ${customRounds.length ? 'on' : ''}`} onClick={() => setRoundsOpen(!roundsOpen)} aria-expanded={roundsOpen} title="每一關最多審查、修改幾輪">
-            <I n="sliders" />審查輪數{customRounds.length > 0 && <span className="n">{customRounds.length}</span>}</button>}
+          <button className={`tool-chip ${quality !== DEFAULT_QUALITY ? 'on' : ''}`} onClick={() => { setQualityOpen(!qualityOpen); setRoundsOpen(false); }} aria-expanded={qualityOpen} title="品質越高，檢查越細、時間越長">
+            <I n="spark" />{QUALITY_INFO[quality].label}</button>
+          {defaults && <button className={`tool-chip ${customRounds.length ? 'on' : ''}`} onClick={() => { setRoundsOpen(!roundsOpen); setQualityOpen(false); }} aria-expanded={roundsOpen} title="每一關最多審查、修改幾輪">
+            <I n="sliders" /><span className="lbl-wide">審查輪數</span>{customRounds.length > 0 && <span className="n">{customRounds.length}</span>}</button>}
           <span className="grow" />
           <Seg value={agent} onChange={setAgent} options={[
             { value: 'claude', label: <><span className="long">Claude Code</span><span className="short">Claude</span></>, disabled: agents && !agents.claude, title: agents?.claude || '未偵測到' },
@@ -151,10 +156,11 @@ function Composer({ agents }: { agents?: Partial<AgentStatus> }) {
           <button className="send" disabled={!ok} onClick={submit} aria-label="開始">{busy ? <span className="spin-ring" /> : <I n="up" s={2.2} />}</button>
         </div>
         {inputs.length > 0 && <div className="small faint" style={{ padding: '8px 10px 2px' }}>素材：{inputs.map((f) => f.name).join('、')}</div>}
-        {roundsOpen && defaults && <div className="comp-rounds fade-in"><RoundsEditor value={rounds} defaults={defaults} onChange={setRounds} /></div>}
+        {qualityOpen && <div className="comp-rounds fade-in"><QualityPicker value={quality} onChange={(q) => { setQuality(q); setQualityOpen(false); }} /><div className="tiny faint" style={{ padding: '6px 2px 0' }}>時間以 30 秒的片、核准企劃後計算；做到一半或做完都可以再換（做完升級會從這支片接著修）。</div></div>}
+        {roundsOpen && defaults && <div className="comp-rounds fade-in"><RoundsEditor value={rounds} defaults={defaults} onChange={setRounds} pauses={preset?.pauseAtLimit !== false} /></div>}
       </div>
       {err ? <div className="small" style={{ color: 'var(--red)', textAlign: 'center', marginTop: 12 }}>{err}</div>
-        : <div className="small faint" style={{ textAlign: 'center', marginTop: 12 }}>先拆解與企劃，你核准前不會開始生成 · Ctrl+Enter 送出</div>}
+        : <div className="small faint" style={{ textAlign: 'center', marginTop: 12 }}><span>{QUALITY_INFO[quality].label}</span> <span>{estimate(quality)}</span> · <span>先拆解與企劃，你核准前不會開始生成</span> · <span>Ctrl+Enter 送出</span></div>}
       <div className="suggest">{SUGGEST.map((x) => <button key={x} onClick={() => setBrief(x)}>{x}</button>)}</div>
     </>
   );

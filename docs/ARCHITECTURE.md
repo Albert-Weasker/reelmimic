@@ -25,7 +25,7 @@ Server (app/server)
    ├─ turn.ts           one agent turn: global slots (reviews and fixes jump the queue), required-file check, failure reason
    ├─ contract.ts       format check for the JSON files agents write (plan, production, reviews, fixes, critique)
    ├─ runner.ts         one flow per project; Cancel stops every agent and tool process it started (whole process tree)
-   ├─ store.ts          job.json, event log, live-update bus, round limits
+   ├─ store.ts          job.json (written atomically), event log, live-update bus, round limits and quality presets
    ├─ inputs.ts         required inputs and lyric timing
    ├─ prompts.ts        the instructions each step gives its agent (edits apply on the next turn, no restart)
    └─ agents/index.ts   agent adapters: Claude Code / Codex → one event stream
@@ -72,22 +72,37 @@ current files.
 setup (director): shared assets, one definition file per character, character sheets, segments (build/production.json)
    │
    ├──────────────── cast gate (runs alongside shot building) ─────────────┐
-   │  per character: reviewer (fresh) ⇄ fixer agent, up to 3 rounds         │
+   │  per character: reviewer (fresh) ⇄ fixer agent, up to N rounds (mode)  │
    │  items that need the shared rig changed → director fixes → re-review    │
    │  all passed → line-up check (relative scale, interactions)             │
    │                                                                        │
    ├── segments: up to BUILDERS builders in parallel, 1–4 shots each        │
    │     each finished shot writes <shot>.done.json → a fresh shot reviewer  │
    │     is dispatched at once; reviews wait for the cast gate ←────────────┘
-   │     → failing shots go back to the same builder → only those are re-reviewed, up to 3 rounds
+   │     → failing shots go back to the same builder → only those are re-reviewed, up to N rounds (mode)
    │     → shared-file problems: the director fixes them on the spot (one at a time, additive only),
    │       the builder applies them in the same round
    ▼
 assemble (director): assembly, mix, full render
    ▼
-final critic (fresh): only what spans segments — seams, continuity, pacing, consistent captions; verifies every
-earlier "fixed" first ⇄ director revises (up to 2 rounds)
+final critic (fresh): the climaxes against the reference, then the whole film; verifies every earlier "fixed" first
+   ⇄ items inside one segment go back to that segment's builder (all segments at once); the rest to the director,
+     who renders once (rounds by mode, more while the must-fix list keeps halving)
 ```
+
+**Quality modes** (`job.quality`, picked when a project is created, changeable at any time): one table in
+`jobs.ts` (`CONFIG.presets`) sets the rounds per gate, and the prompts read the mode to decide what blocks.
+
+| mode | rounds cast / shots / final | what blocks | at a round limit |
+|---|---|---|---|
+| fast | 2 / 2 / 1, no extra rounds | only what a viewer sees at once (broken character, black frame, unreadable caption, missing climax) | carries on and lists what is left |
+| standard | 2 / 3 / 2, +1 while shrinking | one-frame pose changes in the climax shots, everything visible at normal speed | pauses for the user |
+| fine | 3 / 3 / 2, +3 while shrinking | every pose change checked frame by frame; a climax must beat the reference | pauses for the user |
+
+New projects default to fine. Measured on real runs with the same inputs (30 s, 9 shots): fine 222 min (all scores ≥ 4, two 5s), fast 79 min (scores 4, two 3s, every climax still beats the reference). Standard is not measured yet and is shown as an estimate.
+Upgrading a finished film (for example fast → fine) starts a new final review under the stricter bar and fixes from
+the current film. Projects made before modes existed run the fine line. Times shown in the UI
+(`QUALITY_MINUTES`, scaled by film length) come from real runs: fine 167–222 min, fast 79 min for a 30 s film.
 
 Design points:
 - **Catch defects where they are made**: characters are reviewed before shots, every shot as soon as it is built —
@@ -116,7 +131,8 @@ projects/<id>/
   brief.md / inputs/     the user's brief and uploaded inputs
   analysis/              report.json, STYLE.md, route.json, lyrics/subs.lrc|json
   plan.json              the pre-production plan (the web app's main view)
-  build/                 engine project: production.json, character definitions, one file per shot, engine snapshot
+  build/                 engine project: production.json, character definitions, one file per shot, engine snapshot,
+                         score/ (Motion Score: film.json + shots/<id>.json, compiled to the engine's score.js)
   out/check/             cast/ (sheets, reviews, fixes), shots/ (per-segment done/review/fixes/shared, per-shot frames), critique.json, fixes.json
   out/video.mp4          the film
 ```
@@ -166,7 +182,9 @@ builder (kept across fix rounds); reviewers always start fresh.
 | Tool | Purpose |
 |---|---|
 | `analyze.py` | download (yt-dlp) and measure the reference: shots, pacing, BPM, palette, camera moves, contact sheets |
-| `compare.py` | shot-by-shot side-by-side comparison of the film and the reference |
+| `compare.py` | shot-by-shot side-by-side comparison of the film and the reference, plus the measured `style_distance.json` |
+| `motion_score.py` | Motion Score (`score/`, `optimize/`): the film's camera and timing as data — `from-ref` (transfer the reference's measured camera), `validate`, `predict` (render-free), `optimize` (CMA-ES), `compile` (runtime for the engines) — see [COMPILER.md](COMPILER.md) |
+| `fingerprint.py` | Style Fingerprint (`perception/`): camera trajectories with fitted eases, tension peaks, cut/beat phase, cadence, colour; `style_distance` with findings; `plan-check` (does the plan cut as often as the reference) — see [COMPILER.md](COMPILER.md) |
 | `hf_frames.py` | frame grabs for HyperFrames projects: many moments per call, PIL crops, content-hash cache, machine-wide concurrency limit |
 | `fetch_assets.py` | license-safe asset search and download (Openverse, Pixabay, Freesound), writes ASSETS.md |
 | `align_lyrics.py` | user-provided lyric text × audio → per-line timing (faster-whisper only as a ruler) |

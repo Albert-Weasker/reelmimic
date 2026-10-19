@@ -180,7 +180,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: -.022e
 .composer textarea { display: block; width: 100%; min-height: 96px; max-height: 280px; resize: none; border: 0; outline: 0; background: none; padding: 12px 10px 6px; font-size: 16.5px; line-height: 1.55; color: var(--label); }
 .composer textarea::placeholder { color: var(--label-3); }
 .comp-bar { display: flex; align-items: center; gap: 6px; padding: 4px 2px 0; flex-wrap: wrap; }
-.tool-chip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 99px; font-size: 13.5px; color: var(--label-2); transition: background .2s, color .2s; }
+.tool-chip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 99px; font-size: 13.5px; white-space: nowrap; flex-shrink: 0; color: var(--label-2); transition: background .2s, color .2s; }
 .tool-chip:hover { background: var(--fill-2); color: var(--label); }
 .tool-chip.on { background: var(--accent-soft); color: var(--accent-ink); }
 .tool-chip .n { font-size: 11.5px; font-weight: 700; min-width: 18px; height: 18px; border-radius: 9px; background: var(--accent); color: #fff; display: grid; place-items: center; padding: 0 5px; }
@@ -397,6 +397,9 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: -.022e
 .score .pips { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
 .score .pips i { height: 5px; border-radius: 3px; background: var(--fill); }
 .score .pips i.on { background: var(--green); }
+.score .bar { height: 5px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.score .bar i { display: block; height: 100%; border-radius: 3px; background: var(--label-2); }   /* similarity, not good or bad: neutral */
+.critique.measured { margin-top: 14px; }
 .score.low .pips i.on { background: var(--orange); }
 .critique { margin-top: 18px; padding: 16px; border-radius: var(--r); background: var(--surface-2); }
 
@@ -497,7 +500,9 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: -.022e
   .comp-bar { flex-wrap: nowrap; }
   .seg button { padding: 0 9px; font-size: 12.5px; }
   .seg .long { display: none; }
-  .tool-chip { padding: 0 8px; }
+  .tool-chip { padding: 0 8px; gap: 4px; }
+  .comp-bar .lbl-wide { display: none; }
+  .comp-bar { gap: 2px; }
   .card { padding: 18px 16px; border-radius: 20px; }
   .livebar .small { display: none; }
   .p-head h1 { font-size: 26px; }
@@ -629,6 +634,14 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: -.022e
 .rd-note { padding-top: 8px; line-height: 1.5; }
 .comp-rounds { margin: 10px 6px 4px; padding: 6px 14px 10px; border-radius: 14px; background: var(--fill-2); }
 .comp-rounds .rd-row:last-of-type { border-bottom: 0; }
+.q-pick { display: grid; gap: 6px; }
+.q-opt { display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 12px; border: 1px solid var(--sep); background: transparent; color: inherit; font: inherit; cursor: pointer; transition: background .15s, border-color .15s; }
+.q-opt:hover:not(:disabled) { background: var(--fill-2); }
+.q-opt.on { border-color: var(--accent); background: var(--fill-2); }
+.q-opt:disabled { opacity: .6; cursor: default; }
+.q-opt .row { gap: 8px; margin-bottom: 2px; }
+.q-opt b { font-size: 14px; font-weight: 600; }
+.q-time { color: var(--accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* required inputs: at the top of the page while the plan is being written / reviewed */
 .card.req-top { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--orange, #FF9F0A) 55%, transparent), var(--shadow-2); }

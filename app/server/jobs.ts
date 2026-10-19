@@ -10,7 +10,7 @@
 // This file is the server's API over all of that: the user's actions, each one run as the project's single flow
 // (runner.ts), plus the project list and snapshot. Every review/fix gate shares one loop (review.ts); one agent turn is
 // turn.ts; job.json and helpers are store.ts.
-import { appendFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, cpSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, cpSync, rmSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import { finalPanel } from './final.ts';
 import { openInputs, alignIfReadyWithNotice, requiredInputs } from './inputs.ts';
@@ -19,14 +19,14 @@ import { production } from './production.ts';
 import { stopPrerenders } from './prerender.ts';
 import * as runner from './runner.ts';
 import { active, run } from './runner.ts';
-import { CONFIG, L, PROJECTS, ROOT, ROUND_RANGE, chat, cleanRounds, diskWarning, dirOf, jpath, listFiles, load, now, oneOf, pipe, readJSON, readText, recentLog, rounds, save, update } from './store.ts';
+import { L, PROJECTS, ROOT, ROUND_RANGE, chat, cleanRounds, diskWarning, dirOf, jpath, listFiles, load, now, oneOf, pipe, presetRounds, qualityOf, readJSON, readText, recentLog, rounds, save, update } from './store.ts';
 import { step } from './turn.ts';
-import { ROUND_KEYS } from '../shared/types.ts';
-import type { AgentKind, ChatMessage, EngineSnapshot, Job, Lang, Plan, ProjectSummary, Reference, Review, RoundKey, Rounds, Snapshot, Stage } from '../shared/types.ts';
+import { DEFAULT_QUALITY, QUALITIES, ROUND_KEYS } from '../shared/types.ts';
+import type { AgentKind, ChatMessage, EngineSnapshot, Job, Lang, Plan, ProjectSummary, Quality, Reference, Review, RoundKey, Rounds, Snapshot, Stage } from '../shared/types.ts';
 import type { Production } from './types.ts';
 
 export { ROUND_KEYS };
-export { CANCELLED, CONFIG, PROJECTS, ROOT, ROUND_RANGE, bus, cleanRounds, dirOf, load, rounds, touch, type BusEvent } from './store.ts';
+export { CANCELLED, CONFIG, PROJECTS, ROOT, ROUND_RANGE, bus, cleanRounds, dirOf, load, preset, qualityOf, rounds, touch, type BusEvent } from './store.ts';
 export { alignIfReady, alignIfReadyWithNotice, openInputs, provideInput, saveLyrics, unwaive, waive, type LyricsResult } from './inputs.ts';
 export { stopAll } from './runner.ts';
 export const busy = active;   // a flow is running for this project (runner.ts allows one at a time)
@@ -38,9 +38,16 @@ export const REFERENCE_EXTS = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', 
 export const isVideoName = (name: string) => REFERENCE_EXTS.includes(extname(name).toLowerCase());
 
 // ---------- projects ----------
+// Projects whose job.json can be read; a broken one (truncated by a full disk before writes were atomic) is reported
+// and skipped instead of stopping the server from starting.
+function readableJobs(): string[] {
+  return (existsSync(PROJECTS) ? readdirSync(PROJECTS) : []).filter((d) => {
+    if (!existsSync(jpath(d))) return false;
+    try { load(d); return true; } catch (e) { console.error(`skipping project ${d}: job.json unreadable (${(e as Error).message})`); return false; }
+  });
+}
 export function listJobs(): ProjectSummary[] {
-  if (!existsSync(PROJECTS)) return [];
-  return readdirSync(PROJECTS).filter((d) => existsSync(jpath(d))).map((d) => { const j = load(d); return { id: j.id, title: readJSON<Plan>(join(dirOf(d), 'plan.json'))?.title || j.title, stage: j.stage, agent: j.agent, updatedAt: j.updatedAt, needs: (j.needs || []).length, thumb: existsSync(join(dirOf(d), 'out', 'check', 'style_1.jpg')) ? 'out/check/style_1.jpg' : existsSync(join(dirOf(d), 'analysis', 'sheet_1fps.jpg')) ? 'analysis/sheet_1fps.jpg' : null }; })
+  return readableJobs().map((d) => { const j = load(d); return { id: j.id, title: readJSON<Plan>(join(dirOf(d), 'plan.json'))?.title || j.title, stage: j.stage, agent: j.agent, updatedAt: j.updatedAt, needs: (j.needs || []).length, thumb: existsSync(join(dirOf(d), 'out', 'check', 'style_1.jpg')) ? 'out/check/style_1.jpg' : existsSync(join(dirOf(d), 'analysis', 'sheet_1fps.jpg')) ? 'analysis/sheet_1fps.jpg' : null }; })
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
 
@@ -54,12 +61,14 @@ export function snapshot(id: string): Snapshot {
     plan, storyboard: readText(join(d, 'STORYBOARD.md')), assetsMd: readText(join(d, 'assets', 'ASSETS.md')),
     checks: list('out/check', /\.(jpg|png)$/i).slice(0, 24), video: existsSync(join(d, 'out', 'video.mp4')) ? 'out/video.mp4' : null,
     critique: readJSON(join(d, 'out', 'check', 'critique.json')),
+    styleDistance: readJSON(join(d, 'out', 'check', 'style_distance.json')),
     cast: { sheets: list('out/check/cast', /sheet[^/]*\.(jpg|png)$/i).slice(0, 8), review: readJSON<Review>(join(d, 'out', 'check', 'cast', 'review.json')) },
     shots: list('out/check/shots', /_sheet\.(jpg|png)$/i).slice(0, 60),
     production: readJSON(join(d, 'build', 'production.json')),
     lyrics: readJSON(join(d, 'analysis', 'lyrics', 'subs.json')),
     requiredInputs: requiredInputs(id, plan, job),
-    rounds: { values: rounds(id), defaults: Object.fromEntries(ROUND_KEYS.map((k) => [k, CONFIG[k]])) as Rounds, ...ROUND_RANGE },
+    rounds: { values: rounds(id), defaults: presetRounds(qualityOf(job)), ...ROUND_RANGE },
+    quality: qualityOf(job),
     inputs: list('inputs', /./),
   };
 }
@@ -71,10 +80,10 @@ export function projectTitle(title: string | undefined, brief: string, lang: Lan
   return Array.from(name).slice(0, 40).join('');
 }
 
-export function createJob({ id, title, agent, brief, reference, lang = 'zh-TW', settings = {} }: { id: string; title: string; agent: AgentKind; brief: string; reference: Reference; lang?: Lang; settings?: Partial<Rounds> }) {
+export function createJob({ id, title, agent, brief, reference, lang = 'zh-TW', settings = {}, quality = DEFAULT_QUALITY }: { id: string; title: string; agent: AgentKind; brief: string; reference: Reference; lang?: Lang; settings?: Partial<Rounds>; quality?: Quality }) {
   const d = dirOf(id); mkdirSync(join(d, 'inputs'), { recursive: true }); mkdirSync(join(d, 'analysis'), { recursive: true });
   writeFileSync(join(d, 'brief.md'), brief || '');
-  const job: Job = { id, title, agent, lang, reference, settings, stage: 'new', sessionId: null, sessions: {}, createdAt: now(), chat: [], log: [], needs: [], waived: [], pipeline: {} };
+  const job: Job = { id, title, agent, lang, reference, settings, quality, stage: 'new', sessionId: null, sessions: {}, createdAt: now(), chat: [], log: [], needs: [], waived: [], pipeline: {} };
   save(job);
   return job;
 }
@@ -85,12 +94,37 @@ export function setRounds(id: string, input: Record<string, unknown>) {
   return snapshot(id);
 }
 
+// Change the quality mode. Mid-production it applies from the next check (rounds and prompts read it every turn).
+// A finished film moved to a stricter mode goes back to the final review under the new bar, fixing from this film.
+const RANK: Record<Quality, number> = { fast: 0, standard: 1, fine: 2 };
+const QUALITY_NAME: Record<Quality, [string, string]> = { fast: ['快速', 'Fast'], standard: ['標準', 'Standard'], fine: ['精緻', 'Fine'] };
+export function setQuality(id: string, q: unknown): { upgrade: boolean } {
+  if (!QUALITIES.includes(q as Quality)) throw new Error(`quality must be one of ${QUALITIES.join(', ')}`);
+  const j = load(id), from = qualityOf(j), to = q as Quality;
+  if (from === to) return { upgrade: false };
+  const upgrade = RANK[to] > RANK[from] && j.stage === 'done' && !busy(id) && existsSync(join(dirOf(id), 'out', 'video.mp4'));
+  const [zh, en] = QUALITY_NAME[to];
+  update(id, (x) => { x.quality = to; });
+  chat(id, 'system', upgrade
+    ? L(id, `品質升級為「${zh}」：用新的標準重新評審，從這支片接著修。`, `Quality upgraded to ${en}: the film goes back to the final review under the new bar and is fixed from here.`)
+    : L(id, `品質改為「${zh}」，從下一次檢查開始生效。`, `Quality set to ${en}; it applies from the next check.`));
+  return { upgrade };
+}
+
+// A crash between writing job.json's temp file and renaming it leaves job.json.<pid>.tmp behind: swept at startup.
+function sweepTempJobs() {
+  for (const d of existsSync(PROJECTS) ? readdirSync(PROJECTS) : []) {
+    const dir = dirOf(d);
+    try { for (const f of readdirSync(dir)) if (/^job\.json\.\d+\.tmp$/.test(f)) rmSync(join(dir, f), { force: true }); } catch {}
+  }
+}
+
 // On startup nothing is running, so a job still marked as working was cut off by a restart: say so instead of pretending.
 export function recoverOrphans(): string[] {
+  sweepTempJobs();
   const cut: string[] = [];
   const WORK = ['analyzing', 'styling', 'planning', 'replanning', 'producing', 'revising', 'critiquing'];
-  for (const d of existsSync(PROJECTS) ? readdirSync(PROJECTS) : []) {
-    if (!existsSync(jpath(d))) continue;
+  for (const d of readableJobs()) {
     const j = load(d);
     if (!WORK.includes(j.stage)) continue;
     cut.push(d);

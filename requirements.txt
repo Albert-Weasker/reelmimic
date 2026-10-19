@@ -3,8 +3,11 @@ numpy
 opencv-python
 scenedetect
 librosa
+scipy
 Pillow
 yt-dlp
 # optional: automatic lyrics timing against the user's audio
 faster-whisper
 opencc-python-reimplemented
+# development: python -m pytest .claude/skills/video-clone/scripts/tests
+pytest

@@ -32,13 +32,17 @@ export type Route = { engine?: string; style?: string; medium?: string; confiden
 export type MustFix = { shot?: string; time?: number | null; issue: string; fix?: string };
 export type PeakVerdict = { id: string; ours?: number[]; ref?: number[]; strip?: string; verdict?: 'ours_better' | 'equal' | 'ref_better'; why?: string };
 export type Critique = { pass?: boolean; summary?: string; scores?: Record<string, number>; must_fix?: (MustFix | null)[]; peaks?: PeakVerdict[] };
+export type Finding = { component: string; where: string; severity: 'major' | 'minor' | string; text: string };
+export type StyleDistance = { overall?: number | null; style?: number | null; structure?: number | null;
+  components?: Record<string, { score?: number | null }>; findings?: Finding[] };
 export type Production = { characters?: { id: string; name?: string }[] };
 export type LyricLine = { start?: number; end?: number; text: string; match: number };
 export type Lyrics = { lines?: LyricLine[] };
 
 // the project snapshot with those files narrowed (cast once where it is loaded)
-export type SnapshotView = Omit<Snapshot, 'report' | 'route' | 'plan' | 'critique' | 'production' | 'lyrics'> & {
+export type SnapshotView = Omit<Snapshot, 'report' | 'route' | 'plan' | 'critique' | 'production' | 'lyrics' | 'styleDistance'> & {
   report: Report | null; route: Route | null; plan: PlanView | null; critique: Critique | null; production: Production | null; lyrics: Lyrics | null;
+  styleDistance: StyleDistance | null;
 };
 
 // what a chat message is about (a shot, a moment in the film, or an open question from the plan)

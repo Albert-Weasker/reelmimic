@@ -29,6 +29,16 @@ const EN: Record<string, string> = {
   '換影片': 'Change video', '移除': 'Remove', '素材': 'Assets', '配樂、歌詞、圖片、Logo、自家角色設計圖': 'Music, lyrics, images, logos, your own character designs',
   '開始': 'Start', '未偵測到': 'Not found', '請選擇影片檔（mp4 / mov / webm）': 'Please choose a video file (mp4 / mov / webm)',
   '先拆解與企劃，你核准前不會開始生成 · Ctrl+Enter 送出': 'Analysis and planning come first — nothing renders until you approve · Ctrl+Enter to send',
+  '先拆解與企劃，你核准前不會開始生成': 'Analysis and planning come first — nothing renders until you approve', 'Ctrl+Enter 送出': 'Ctrl+Enter to send',
+  // quality modes
+  '到上限，先繼續': 'At the limit, carried on',   '（預估）': ' (estimate)', '快速': 'Fast', '標準': 'Standard', '精緻': 'Fine', '品質': 'Quality', '目前': 'current', '品質越高，檢查越細、時間越長': 'Higher quality: closer checks, more time',
+  '先看方向：只修一眼看得出的硬傷，到上限就先交件': 'See the direction first: fixes only defects you notice at once, delivers at the round limit',
+  '大部分情況：高潮逐格檢查，其他鏡頭看連續影格': 'Most projects: climaxes checked frame by frame, other shots as motion strips',
+  '要交出去的成品：每個姿勢變化逐格檢查，高潮要贏參考片': 'A film to deliver: every pose change checked frame by frame, climaxes must beat the reference',
+  '時間以 30 秒的片、核准企劃後計算；做到一半或做完都可以再換（做完升級會從這支片接著修）。': 'Times are for a 30 s film, counted from plan approval. You can switch mid-production or after (upgrading a finished film continues from it).',
+  '片已經做好：選更高的品質，會用新的標準重新評審，從這支片接著修。': 'The film is done: pick a higher quality and it goes back to the final review under the stricter bar, fixed from this film.',
+  '核准企劃後開始計時；時間依片長估計。': 'Timed from plan approval; estimated from the film length.',
+  '快速模式到了上限會先交件，把剩下的問題列出來；之後可以升級品質接著修。': 'In Fast mode a limit delivers the film and lists what is left; upgrade the quality later to fix it.',
   '做一支類似風格的 30 秒影片，主軸是愛情，要有好笑的反轉': 'A 30-second video in this style about love, with a funny twist',
   '同樣的剪法，改成介紹我們的新 App': 'Same editing, but introducing our new app',
   '保留節奏和轉場，主題換成親情，直式 9:16': 'Keep the rhythm and transitions, make it about family, vertical 9:16',
@@ -38,6 +48,10 @@ const EN: Record<string, string> = {
   '前製企劃': 'Pre-production', '分鏡、運鏡、素材、定調畫面，和你來回對焦': 'Storyboard, camera, assets and style frames, refined with you',
   '關卡審查': 'Gated review', '角色、每一段都即時檢查，過關才往下做': 'Characters and every segment are checked as they are made',
   '專案': 'Projects', '剛剛': 'just now',
+  '和參考片的相似度': 'Similarity to the reference', '整體色調': 'Palette', '節奏密度': 'Pace', '逐鏡色彩': 'Colour per shot',
+  '剪接對拍': 'Cuts on the beat', '畫面構成': 'Composition', '張力起伏': 'Tension arc', '高潮形狀': 'Climax shape',
+  '逐格量測和參考片有多像（0–100，越高越像）：風格＝看起來、動起來像不像；結構＝有沒有照參考段落的起伏走。這不是品質分數——換媒材、換色調這類刻意的不同也會讓它變低；品質看上面的獨立評審。':
+    'How close the film measures to the reference, frame by frame (0–100, higher = closer): style = does it look and move like it; structure = does it follow the arc of the section it clones. Not a quality score — deliberate differences such as another medium or palette lower it too; for quality, see the independent review above.',
   // status
   '排隊中': 'Queued', '拆解中': 'Analyzing', '判斷風格': 'Styling', '風格完成': 'Styled', '企劃中': 'Planning', '等你確認企劃': 'Awaiting your approval',
   '修改企劃': 'Revising plan', '生產中': 'Producing', '等你提供': 'Needs your input', '評審中': 'Reviewing', '修改中': 'Revising', '完成': 'Done', '需要處理': 'Needs attention',
@@ -134,9 +148,10 @@ const EN: Record<string, string> = {
 };
 // text with numbers / names in it
 const EN_RE: [RegExp, string][] = [
+  [/^約 (\d+)–(\d+) 分鐘$/, 'about $1–$2 min'], [/^約 ([\d.]+)–([\d.]+) 小時$/, 'about $1–$2 h'],
   [/^(\d+) 秒$/, '$1 s'], [/^(\d+) 分 (\d+) 秒$/, '$1 min $2 s'], [/^(\d+) 小時 (\d+) 分$/, '$1 h $2 min'],
   [/^(\d+) 分鐘前$/, '$1 min ago'], [/^(\d+) 小時前$/, '$1 h ago'], [/^(\d+) 天前$/, '$1 d ago'],
-  [/^(\d+) 項必修$/, '$1 must-fix'], [/^· (\d+) 項待你提供$/, '· $1 need your input'], [/^(\d+) 張$/, '$1 frames'], [/^張$/, 'frames'],
+  [/^(\d+) 項必修$/, '$1 must-fix'], [/^風格 (\d+)$/, 'Style $1'], [/^結構 (\d+)$/, 'Structure $1'], [/^整體 (\d+)$/, 'Overall $1'], [/^· (\d+) 項待你提供$/, '· $1 need your input'], [/^(\d+) 張$/, '$1 frames'], [/^張$/, 'frames'],
   [/^(\d+) 個 agent 同時工作中$/, '$1 agents working'], [/^· (\d+) 個 agent 同時工作$/, '· $1 agents working'],
   [/^· 第 (\d+) 輪$/, '· round $1'], [/^第 (\d+) 輪$/, 'round $1'], [/^第$/, 'round'], [/^輪審查$/, 'review'], [/^輪$/, ''],
   [/^平均鏡頭 · ([\d.]+) 拍$/, 'avg shot · $1 beats'], [/^鏡$/, 'shots'], [/^項$/, 'items'], [/^筆 · 完整紀錄在$/, 'entries · full log in'], [/^顯示最近$/, 'Showing the latest'],

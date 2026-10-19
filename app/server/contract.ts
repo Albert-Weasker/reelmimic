@@ -55,7 +55,7 @@ const SCHEMAS: [RegExp, Check][] = [
 // Problems with one agent-written file (project-relative path), [] when it's fine. Any .json must at least parse.
 export function checkFile(rel: string, text: string): string[] {
   let v: unknown;
-  try { v = JSON.parse(text); } catch (e) { return [`${rel}: not valid JSON (${(e as Error).message})`]; }
+  try { v = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text); } catch (e) { return [`${rel}: not valid JSON (${(e as Error).message})`]; }   // a byte-order mark (PowerShell writes one) is fine
   const s = SCHEMAS.find(([re]) => re.test(rel));
   return s ? s[1](v, rel) : [];
 }

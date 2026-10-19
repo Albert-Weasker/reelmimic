@@ -1,6 +1,6 @@
 // Phase prompts. Each agent turn does exactly one step and writes the files CONTRACT.md defines; the server advances only
 // when those files exist. Same prompts for Claude Code and Codex (skills are referenced by path, no Skill tool needed).
-import type { Lang } from '../shared/types.ts';
+import type { Lang, Quality } from '../shared/types.ts';
 import type { BaseVars, Prompts } from './types.ts';
 
 const SKILL = '.claude/skills/video-clone';
@@ -55,8 +55,22 @@ ${process.env.PYTHON && process.env.PYTHON !== 'python' ? `這台電腦的 Pytho
 ${RULES}
 ${SPEED}`;
 
+// Quality mode (job.quality, chosen by the user): where every frame is checked, and what blocks.
+// fine is the line that made v8z8p (every pose change checked frame by frame); fast keeps only what a viewer sees at once.
+const FRAMES: Record<Quality, string> = {
+  fine: '姿勢或表情改變、角色出場／離場的那一刻前後 0.25 秒看成片的每一格',
+  standard: 'hero 鏡頭（plan.peaks）裡姿勢或表情改變、角色出場的那一刻前後 0.25 秒看成片的每一格（其他鏡頭看 12fps strip）',
+  fast: 'hero 鏡頭的爆點前後 0.25 秒看成片的每一格（其他鏡頭看 12fps strip）',
+};
+const BAR = (p: BaseVars) => ({
+  fast: `品質模式：**快速**（使用者選了速度，之後可以升級再修）。blocker 只限觀眾用正常速度一眼就看得出的硬傷：角色和設定圖不像、身體部位斷開或浮空、穿模、
+破圖／黑格／閃格、字幕讀不出、主角找不到、高潮的爆點沒做出來；其他（一般鏡頭裡一格換姿勢、構圖或表演可以更好）一律標 polish。`,
+  standard: '品質模式：**標準**。一格就換姿勢在 hero 鏡頭（plan.peaks）裡是 blocker；其他鏡頭要正常速度看得出來才是 blocker。',
+  fine: '品質模式：**精緻**（要交出去的成品）：照下面的標準最嚴格地審，hero 鏡頭的每一格都要經得起逐格看。',
+}[p.quality]);
+
 // The human-eye checklist every reviewer applies to FULL-RESOLUTION CROPS, not thumbnails.
-const EYE = `用人眼逐處檢查（一定要看全解析度的放大截圖，縮圖看不出來）：
+const EYE = (p: BaseVars) => `用人眼逐處檢查（一定要看全解析度的放大截圖，縮圖看不出來）：
 - 角色：每個身體部位都接在一起（頭—脖子—身體、肩—上臂—前臂—手、臀—腿—腳），沒有浮空的手、沒有硬黏在邊緣的手臂、沒有少脖子；
   關節處沒有接縫線或兩層描邊；比例、配色、髮型、服裝和角色設定圖一致；描線粗細全身一致；表情讀得懂；手拿的東西真的接觸到手。
 - 設計圖：使用者有給角色設計圖（plan.characters[].design）就把它和畫面裡的角色並排比：比例、眼睛、手腳、配色、配件位置，走樣是 blocker。
@@ -65,7 +79,7 @@ const EYE = `用人眼逐處檢查（一定要看全解析度的放大截圖，�
 - 畫面：主體夠大（有情緒、對話、表情戲的鏡頭，主角至少佔畫面高度 35%，看得清臉；只有刻意的遠景建立鏡頭例外）、沒有無用途的大片空白；
   字不壓主體；字幕要把整張圖縮到手機寬度（約 390px 寬）也讀得出來：字高至少畫面高度 4.5%、有描邊或半透明底；沒有色帶、髒污、破圖、閃格、跳格；轉場每個接縫都有。
 - 動作：有預備動作與餘韻、不機械；同一鏡內造型不跳動（例如眼鏡突然變墨鏡）。**動作只能從連續影格判斷**：每個動作（拿、轉身、坐下、跳、表情變化、道具移動）
-  都要看 12fps 的連續 strip，找：一格就換姿勢／表情（沒有中間格）、道具瞬移、該動的手不動、整個人僵硬平移或旋轉、超過 1 秒完全靜止的表演鏡頭。
+  都要看 12fps 的連續 strip；**${FRAMES[p.quality]}**（成片 fps 見 plan.format.fps；12fps 只看到一部分格，一格內換姿勢會被看成正常動作——兩次真實製作的跳格都是這樣漏到最後評審），找：一格就換姿勢／表情（沒有中間格）、道具瞬移、該動的手不動、整個人僵硬平移或旋轉、超過 1 秒完全靜止的表演鏡頭。
 - 不要用閃白、轉場或鏡頭切走去蓋掉做不到的動作；做不到就在共用角色定義新增姿勢或換一個做得到的演法。`;
 
 const QA_OUT = (file: string, extra = '') => `寫 ${file}（JSON）：${extra}
@@ -86,8 +100,12 @@ export const prompts: Prompts = {
 使用者需求（brief.md）：
 ${p.brief}
 
-1. analyze.py 已跑完：讀 analysis/report.json，打開 analysis/sheet_1fps.jpg 與 sheet_scenes.jpg 實際看。
-2. 寫 analysis/STYLE.md：第一行寫媒材；把 shot_details 整理成鏡頭清單表；配色與色彩弧線、角色造型語言、剪接、轉場、敘事結構、字幕用法；
+1. analyze.py 已跑完：讀 analysis/report.json，打開 analysis/sheet_1fps.jpg、sheet_scenes.jpg 與 fingerprint.png 實際看。
+   analysis/fingerprint.json 是實測的時間序列：每鏡 shots[].move（運鏡種類、起點、時長、量、擬合出的緩動 ease.named / ease.bezier、
+   overshoot、同一鏡的其他運鏡 other_moves）、cadence（一拍一／一拍二：每秒幾張新畫面）、tension 曲線的 peaks（鋪陳斜率、屏息深度、爆點幾格到位、停多久）、
+   rhythm（切點落在拍點的比例與相位）。數字只是指路，影格才是答案；但寫規格時用實測值，不要用「慢慢推近」這種形容詞。
+2. 寫 analysis/STYLE.md：第一行寫媒材；把 shot_details 整理成鏡頭清單表（運鏡欄寫實測的種類、時長與緩動，例如「推近 +18%，0.55 s，expo.out」）；
+   寫一行 cadence 與一行剪接節奏（切點對拍比例）；配色與色彩弧線、角色造型語言、剪接、轉場、敘事結構、字幕用法；
    最後列「這支好看的 3–5 個關鍵」。
 2b. **找參考片的高潮（起雞皮疙瘩的那 1–2 刻）**：report.json 的 audio.peak_candidates（音樂蓄力後爆發的時間點）與 flashes（閃白格）只是線索；
    對每個候選用 clip_strip.py 對參考片（${REF}）抽前 2 秒到後 2 秒的 12fps 連續影格（不加 --vs）存成 analysis/peak_<n>.jpg，打開看，確認真正的爆點。
@@ -123,7 +141,11 @@ ${WOW}
    **情緒弧線**：不只能量往上，要有一個小故事（想要什麼 → 遇到阻礙或等待 → 高潮時得到），讓爆點有意義。
    **變化**：在 STORYBOARD.md 列出每鏡的場景與機位，算出同一場景＋機位佔片長的比例（≤ 40%），高潮之間換場景或視角。
 4. 寫 plan.json（CONTRACT.md 格式）與 STORYBOARD.md：logline、look、borrowed_from_reference、角色／產品、每鏡時間、動作、轉場、reads、
-   素材與音效；逐鏡對照：ref_shot、ref_what、camera（engine 規格、pace 跟參考一致）。平均鏡頭長度、字卡比例、暗調比例與參考接近（±30%）。
+   素材與音效；逐鏡對照：ref_shot、ref_what、camera（engine 規格；有對應參考鏡頭時，時長、量與緩動照 fingerprint.json 該鏡的實測值，
+   例如 cubic-bezier 直接抄 ease.bezier）。動畫節奏照參考片的 cadence（一拍二就每張畫停兩格）。平均鏡頭長度、字卡比例、暗調比例與參考接近（±30%）。
+   **畫面變化至少要和參考片一樣頻繁**：參考片的換場 = 硬切＋鏡頭內的轉場換景（布幕、煙霧、光圈…，看 STYLE.md 鏡頭表括號裡的場景），
+   數出它每 10 秒換幾次畫面，企劃的構圖／場景變化不能更少（使用者要更熱鬧就更多）。寫完跑 python ${SKILL}/scripts/fingerprint.py plan-check ${p.dir}：
+   它比的是硬切數，「比參考慢」要加切點或鏡頭內換景；比參考快沒關係；它列出的「太短」鏡頭只是提醒運鏡會被壓縮。
 5. 角色：plan.characters 每個角色寫清楚造型（輪廓、比例、配色、髮型、服裝、特徵）與 id；使用者有給設計圖的角色寫 "design": "inputs/<圖>"，
    並量出設計圖的比例寫進描述（例如：身體寬:高 = 1.9:1、眼睛在上 1/3、手從身體中段水平伸出、4 隻短腳）。
    ${DESIGN}
@@ -170,7 +192,7 @@ ${ENGINE(p)}
 4. 照 plan.style_frames 其餘項目渲染 2–3 張 out/check/style_*.jpg（用真正的角色與素材），和對應參考鏡頭並排看，到水準才交出。
 5. 更新 plan.json（style_frames：key_*_vs_ref.jpg 放最前面；assets）與 STORYBOARD.md；鏡頭內容除非必要不要改。
 ${WOW}
-${EYE}`,
+${EYE(p)}`,
 
   replan: (p) => `${HEADER(p)}
 
@@ -179,7 +201,8 @@ ${EYE}`,
 ${p.message}
 
 修改 plan.json 與 STORYBOARD.md（version +1，changelog），必要時補抓素材、重畫受影響的定調畫面（改到高潮就重做 key_<n>_vs_ref.jpg）。不要開始生成。逐條回報怎麼處理；做不到的直說並給替代方案。
-改動如果犧牲了參考片的核心（例如雙人故事改成獨角戲、拿掉高潮），在回報裡明講這個取捨。`,
+改動如果犧牲了參考片的核心（例如雙人故事改成獨角戲、拿掉高潮），在回報裡明講這個取捨。
+改到鏡頭時間就再跑 python ${SKILL}/scripts/fingerprint.py plan-check ${p.dir}：不要比參考片慢（使用者明確要求除外）；畫面變化不能比參考片少。`,
 
   // ---------- production: setup → cast gate → shot line → assemble ----------
   setup: (p) => `${HEADER(p)}
@@ -198,9 +221,24 @@ ${ENGINE(p)}
    - 高潮音效：plan.peaks 的 sound（爆點前的安靜或抽空、蓄力上升音、落在 hit_s 的撞擊／音樂重拍）在共用混音裡先放好。
    每個鏡頭各自一個檔案（painted-animation：src/scenes/<shot>.js；hyperframes：compositions/<shot>.html），總檔先把全部鏡頭的引用都掛好，
    讓製作 agent 只需要改自己的鏡頭檔，不會互相衝突。
+1b. **運鏡與時間寫成 Motion Score**（docs/COMPILER.md 第 2 階段；鏡頭檔不再手寫運鏡與寫死的秒數）：
+   - python ${SKILL}/scripts/motion_score.py from-ref ${p.dir} → build/score/（film.json + shots/<shot>.json）：每鏡的運鏡從參考片對應鏡頭**實測轉移**
+     （同樣的時長、量、擬合出的緩動；from_ref 記錄來源）。
+   - 照企劃調整：每鏡 camera.base（x, y = 畫面中心對準的世界座標、zoom、rot 弧度）與 moves 的目標（例如推到眼睛就讓 base 和 by 對準眼睛），
+     **保留轉移來的時長與 ease**，除非企劃刻意不同；film.json 的 cues 寫高潮與關鍵動作的時間（例如 "P1_hit": "B28"，時間寫法見 ${SKILL}/scripts/score/timeexpr.py）。
+   - python ${SKILL}/scripts/motion_score.py validate build/score（有 error 一定要修）；python ${SKILL}/scripts/motion_score.py predict ${p.dir}
+     （不渲染就預測每鏡運鏡和參考片的差距；major 要修，或在 production.json 的 score.notes 寫為什麼故意不同）。
+   - 改完構圖目標後跑 python ${SKILL}/scripts/motion_score.py optimize ${p.dir} --peaks：不渲染，搜尋每鏡運鏡的起點、時長與緩動（不改構圖量），
+     讓它更接近參考片，並把高潮附近的鏡頭一起調、讓預測的張力在 plan.peaks 的爆點更像參考片的爆發；看 out/check/score_optimize.json 的 changes，
+     合理就加 --apply 再跑一次寫回 build/score（每個改動都記在 "tuned"）。
+   - python ${SKILL}/scripts/motion_score.py compile build/score --out <引擎載入的位置>：canvas 引擎（painted、pixel…）build/src/score.js，
+     在 studio.html 的鏡頭 script 之前載入；HyperFrames build/assets/score.js，在 index.html 的 kit.js 之後載入。
+   - production.json 加 "score": { "dir": "build/score", "js": "<compile 輸出>", "compile": "<完整 compile 指令>", "notes": "…" }。
 2. **角色**：用 engine 的角色系統做出每個角色（2D 向量風格一律用 ${SKILL}/assets/vector_rig/ 的骨架＋一體輪廓角色，不准用分開的形狀拼角色；
    painted 風格用角色骨架 cast_rig）。**每個角色一個定義檔**（例如 build/assets/cast/<角色id>.js），骨架／rig 本體另外一個共用檔；
    鏡頭只能呼叫角色定義、不准在鏡頭裡另外畫角色的身體部位。（每個角色會由不同 agent 同時審查與修正，所以不能把所有角色寫在同一個檔案裡。）
+   共用檔提供姿勢過渡（例如 blendPose(P0, P1, k)），內插的是**畫出來的**手腳位置與角度：IK 目標超出手長時先夾到手搆得到的地方再內插。
+   （一次真實製作內插了搆不到的 IK 目標：前八成時間手一直伸直不動，整個 0.26 秒的動作擠進最後一格，審查退了三輪。）
 3. **角色設定圖**：每個角色一張 out/check/cast/sheet_<角色id>.jpg（全解析度）：正面、3/4、側面、5 個以上表情、
    6 個以上本片會用到的動作姿勢（舉手、揮手、拿東西、坐、跑、驚嚇…）。再加一張所有角色並排的 out/check/cast/sheet.jpg（比例、互動姿勢）。
    每張都要有可以重新輸出的指令（寫進 production.json 的 characters[].render）。自己先打開看過。
@@ -221,10 +259,11 @@ ${p.character ? `**這一輪你只審角色「${p.character.name || p.character.
 1. 讀 plan.json 的 characters 與 brief；打開 out/check/cast/ 的所有設定圖，**每個角色、每個表情、每個姿勢都放大看**
    （用 Python PIL 裁切全解析度區塊存到 out/check/cast/qa_*.png 再打開）。
 2. 第 2 輪以後：先讀 out/check/cast/fixes.json，逐項核對上一輪的問題是否真的修好（看修改後的截圖，不是看說明）。
-${EYE}
+${EYE(p)}
 另外判斷：造型是否符合企劃描述、是否夠有個性且在參考片的風格範圍內、會不會跟知名既有角色撞臉。
    **有使用者設計圖的角色**：把設計圖和設定圖裡每個姿勢並排（PIL 拼成 out/check/cast/qa_<id>_vs_design.jpg）逐格比；
    比例漂移（變高變窄）、手腳數量或位置不對、配件蓋住身體或戴錯部位，都是 blocker。
+${BAR(p)}
 3. ${QA_OUT('out/check/cast/review.json', '{ "pass": true|false, "issues": [ { "character": "…", "what": "姿勢/表情/部位", "issue": "…", "fix": "…" } ], "verified_fixes": [ { "issue": "…", "fixed": true|false } ], "needs_user": [] }')}
    會讓觀眾覺得「拼湊、廉價、不一致」的都是 blocker。`,
 
@@ -251,13 +290,17 @@ ${ENGINE(p)}
 - 同時有好幾個製作 agent 在渲染：預覽只渲染需要的幾格（stills/strip），不要反覆整段渲染，也不要開大量平行 worker。
 - 只改自己的鏡頭檔；共用檔（角色、配色、總檔）唯讀，發現共用檔有問題寫進 out/check/shots/${p.chunk.id}.done.json 的 notes，不要改。
 - 角色一律呼叫共用角色定義，造型、比例、配色和設定圖一致；不准在鏡頭裡自己畫手臂、手、身體。
+- **運鏡一律從 Motion Score 取**（production.json 的 score）：canvas 引擎 \`const c = Score.cam('S3', t); camBegin(c.x, c.y, c.zoom, c.rot)\`；
+  HyperFrames 在 draw(t, S) 裡 \`S.cam.setAttribute('transform', Score.svgCamLocal('S3', t))\`（不要用專案 Kit 的 S.camera：有些專案的版本會忽略滾轉）。
+  不要在鏡頭檔手寫 lerp 運鏡或寫死秒數：關鍵時間用 Score.cue('P1_hit')、Score.beat(n)；一拍二的鏡頭用 Score.held('S3', t) 當角色動作的時間。
+  運鏡要改就改自己那一鏡的 build/score/shots/<shot>.json（只改自己的鏡頭；film.json 唯讀），再跑 production.json 的 score.compile。
 - **hero 鏡頭**（plan.shots 裡 "hero": true，屬於 plan.peaks）：照 plan.peaks 的 build/hit/after 做到格的層級；可以用特製姿勢、誇張變形、衝擊格、smear、
   光芒、粒子、鏡頭震動（需要新的角色姿勢或變形臉就在 notes 寫 "status": "shared" 請導演加進共用角色定義，不要在鏡頭裡疊畫手臂或身體）。
   做完用 clip_strip.py 把這段和參考高潮（analysis/peaks.json 的 from–to）並排成 out/check/shots/<shot>_peak_vs_ref.jpg，打開比：我們的爆點不如參考片震撼就繼續加，不要交。
 ${WOW}
 - 每一鏡做完就渲染檢查（不要全部做完才看）：stills（開頭/中間/結尾）與**每個動作 12fps 的連續 strip**，存成 out/check/shots/<shot>_sheet.jpg，
   並把每個角色裁切成全解析度 out/check/shots/<shot>_crop_*.png，自己打開看。
-${EYE}
+${EYE(p)}
 - **每一鏡做完、自己檢查過，就立刻寫 out/check/shots/<shot>.done.json**：{ "id": "S1", "sheet": "…", "crops": ["…"], "notes": "…" }，
   然後接著做下一鏡。寫出這個檔的那一刻，獨立審查員就會開始審這一鏡（你不用等）；之後不要再改已交出的鏡頭，除非是修正輪。
 - 全部做完寫 out/check/shots/${p.chunk.id}.done.json：{ "shots": [ { "id": "S1", "sheet": "…", "crops": ["…"], "notes": "…" } ] }`,
@@ -269,28 +312,35 @@ ${EYE}
    同一段的其他鏡頭可能還在製作，只審指定的鏡頭；如果前一鏡已經做好，也檢查「前一鏡最後一格 → 這一鏡第一格」的接縫。
 2. **先用製作 agent 已經輸出的圖**（<shot>_sheet.jpg、strip、裁切、<shot>_peak_vs_ref.jpg）：它們比鏡頭檔新就直接看，不要重截（截圖是最花時間的事）。
    只有鏡頭檔比那些圖新、圖不夠看、或要放大某一處時，才用預覽指令（build/production.json 的 how_to_preview；HyperFrames 用 hf_frames）補截，一次把要補的時間點全部截完。
-   連續影格一律 12fps（render.mjs --strip 預設就是 12fps），不要用 24fps。
+   連續影格整體用 12fps，姿勢／表情改變的那一刻前後 0.25 秒看成片的每一格（只截那一小段：render.mjs --strip=a:b 本來就是逐格、
+   hf_frames.py --range a:b:f、clip_strip.py --fps <成片 fps>）。只看成片真的有的格：hf_frames 會把時間對到那一刻畫面上的那一格，
+   自己算時間時用 格數/fps，不要用 0.0417 這種步距（30fps 的片有一次就是在格與格之間看到設計好的中間姿勢，成片卻一格跳完）。
+   一格就換姿勢時，在 issue 寫出是哪兩格（格的時間）和兩格之間變了什麼，讓製作 agent 直接逐格查。
    參考片對應鏡頭在 analysis/（sheet_scenes.jpg；需要時用 ffmpeg 從 ${REF} 抽格）。
 3. 第 2 輪以後：先讀 out/check/shots/${p.chunk.id}.fixes.json，逐項用修改後的截圖核對是否真的修好；沒修好的直接列回問題。
-${EYE}
+${EYE(p)}
 另外：動作與運鏡是否照企劃、和參考鏡頭的手法一致；和角色設定圖比對造型一致性。
    **動作**：每個動作都要看 12fps 連續影格（製作 agent 的 strip 不夠就自己用預覽指令的 strip 模式或 hf_frames --range 截）。一格換姿勢、道具瞬移、
-   該動不動、僵硬整塊旋轉、表演鏡頭超過 1 秒完全靜止，都是 blocker。
+   該動不動、僵硬整塊旋轉、表演鏡頭超過 1 秒完全靜止，${p.quality === 'fine' ? '都是 blocker' : '照上面的品質模式判 blocker 或 polish'}。
    **hero 鏡頭**（plan.peaks）：打開 <shot>_peak_vs_ref.jpg（沒有就自己用 clip_strip.py 做），參考在上、我們在下逐格比。
    爆點比參考片弱（主體小、畫面空、沒有停住、被閃白蓋掉、沒有預備或衝擊）是 blocker，寫清楚差在哪、要加什麼。
+${BAR(p)}
 4. ${QA_OUT(p.out || `out/check/shots/${p.chunk.id}.review.json`, '{ "shots": [ { "id": "S1", "pass": true|false, "issues": [ { "time": 1.2, "where": "畫面位置", "issue": "…", "fix": "…" } ] } ], "verified_fixes": [ { "issue": "…", "fixed": true|false } ], "needs_user": [] }')}
-   嚴格：專業動畫導演會退回的就不過。`,
+   ${p.quality === 'fast' ? '快速模式：只有上面列的硬傷才不過。' : '嚴格：專業動畫導演會退回的就不過。'}`,
 
   fix_chunk: (p) => `${HEADER(p, '製作')}
 ${ENGINE(p)}
 
-## 步驟：修鏡頭段 ${p.chunk.id}（審查第 ${p.round} 輪沒過）
+## 步驟：修鏡頭段 ${p.chunk.id}（${p.final ? '最後評審看完整支片後列的必修，這幾項在你的段落' : `審查第 ${p.round} 輪沒過`}）
 沒過的鏡頭與問題：
 ${JSON.stringify(p.bad, null, 1)}
 ${p.message ? `\n使用者的指示（優先照做）：${p.message}\n` : ''}先看 out/check/shots/${p.chunk.id}.shared.json（如果有）：導演已經改好的共用功能，照它的 api 套用到鏡頭裡。
 逐項修改（只改自己的鏡頭檔），重新渲染受影響的 stills/strip 與角色裁切。
 寫 out/check/shots/${p.chunk.id}.fixes.json：[ { "shot": "S2", "issue": "…", "change": "改了什麼", "before": "…_before.png", "after": "…_after.png" } ]，
-before/after 是同一秒、同一位置的全解析度裁切，自己打開確認改好了。共用檔的問題不要自己改，寫 "status": "shared" 說明要導演改什麼。`,
+before/after 是同一秒、同一位置的全解析度裁切，自己打開確認改好了；動作類的修正再附改動處前後 0.25 秒的**成片逐格**連續影格（hf_frames.py --range a:b:f；一格內換姿勢只有逐格看得出來）。
+逐格的範圍從**改動區間開始前 0.3 秒到結束後 0.3 秒**：改出來的新問題幾乎都在改動和沒改的交界（一次真實製作只看了改動之後的格，交界那一格一次換四件事，又多跑一輪）。
+共用檔的問題不要自己改，寫 "status": "shared" 說明要導演改什麼。${p.final ? `
+這是最後評審階段：導演會在你之後重新輸出整支成片，你只要改好、渲染檢查自己的鏡頭檔，不要渲染整支片。` : ''}`,
 
   shared_fix: (p) => `${HEADER(p)}
 ${ENGINE(p)}
@@ -311,6 +361,8 @@ ${ENGINE(p)}
 1. 讀 build/production.json 與各段 out/check/shots/*.fixes.json 裡 "status": "shared" 的項目，先修共用檔的問題。
 2. 接起全部鏡頭：轉場、配樂、音效、字幕（歌詞字幕只能用 analysis/lyrics/subs.lrc 或 inputs 的 LRC；沒有就不上歌詞字幕）。
 3. 正式渲染 out/video.mp4（render.mjs --frames 有快取：通過審查的段落多半已經在背景渲染好，只會重渲改過的鏡頭；不要刪 out/frames）；確認有音軌（ffprobe；沒有就把混音 mux 進去）。跑 python ${SKILL}/scripts/compare.py ${p.dir}；檢查每個接縫（前後 0.5 秒 strip）。
+   整支片渲染一次要好幾分鐘：看到要調的地方先全部列出來、改完用截圖指令（HyperFrames：hf_frames）看改動處，**全部改完才重新渲染一次**；
+   不要改一處就渲染整支片（一次真實製作在這一步渲染了 4 次，多花 12 分鐘）。
 4. 跑 python ${SKILL}/scripts/motion_check.py out/video.mp4 --out out/check/motion：片中黑格、片尾硬切黑、意外的長時間靜止都要修掉再交。
 5. 每個 plan.peaks 用 clip_strip.py 做 out/check/peak_<n>_vs_ref.jpg（我們的 build_from_s–hit_s+hold_after_s 對參考 peaks.json 的 from–to），打開比；明顯輸參考片就先修。
 6. 回報：長度、解析度、每鏡一句話、還不完美或暫代的部分。`,
@@ -324,6 +376,11 @@ ${RULES}
 你只能讀、量、看，並寫 out/check/critique.json 與 critique.md；不要修改其他檔案。每個鏡頭在製作時已經過鏡頭審查（他們只抓瑕疵）。
 **你的工作是判斷這支片能不能讓人起雞皮疙瘩、有沒有到參考片的水準**，不是確認「沒有錯」。
 ${WOW}
+${p.quality === 'fast' ? `
+**品質模式：快速**（使用者選了速度，之後可以升級再修）。分數照實打、問題照實寫，但 **must_fix 只放**：觀眾用正常速度一眼就看得出的硬傷
+（角色和設計圖不像、身體斷開或穿模、破圖／黑格／閃格、字幕讀不出、主角找不到）和判 ref_better 的高潮；其他（包含 ours_better 高潮在 why 裡的弱點、
+< 4 的項目）都放 nice_to_have，使用者升級品質時會照它修。下面「必須有對應 must_fix」的規則在快速模式不適用。
+` : ''}
 
 1. 參考片：analysis/report.json、peaks.json、sheet 圖。
 2. **高潮對決（最先做、最重要）**：plan.peaks 每一個，用 clip_strip.py 做 out/check/critic/peak_<n>_vs_ref.jpg
@@ -335,7 +392,9 @@ ${WOW}
 3. 成片：ffmpeg 每 0.5 秒抽一格做總覽到 out/check/critic/，全部打開；每個接縫抽前後 0.5 秒的 strip；
    每個動作用 clip_strip.py 抽 12fps 連續影格看（跳格、瞬移、該動不動、僵硬）；可疑處抽全解析度放大。
    跑 python ${SKILL}/scripts/motion_check.py out/video.mp4 --out out/check/critic/motion，打開它產生的每張 strip。
-4. 跑 compare.py，看 compare_all.jpg；逐鏡打分（CLAUDE.md 要求每鏡 ≥ 4）。
+4. 跑 compare.py，看 compare_all.jpg 與 fingerprint_overlay.png；讀 out/check/style_distance.json 的 findings（實測：運鏡緩動與時長、
+   張力曲線與高潮形狀、切點對拍、cadence、色彩）。每條 major 都要自己抽影格確認：屬實且觀眾看得出來就列 must_fix（把實測數字和建議的
+   cubic-bezier／格數寫進 fix）；量測誤判（例如 UI 疊層、轉場被當成運鏡）就在 critique.md 註明。逐鏡打分（CLAUDE.md 要求每鏡 ≥ 4）。
 4b. 角色設計圖（plan.characters[].design）：每鏡抽一格角色清楚的畫面，和設計圖拼成一張並排圖逐一比對（比例、眼睛、手腳、配件位置）。
 4c. 變化：從 0.5 秒總覽算出同一場景＋機位佔片長的比例（> 40% 是 must_fix）；高潮前的鋪陳有沒有一個構圖停太久。
 5. **第 1 輪就把觀眾看得出來的問題全部列進 must_fix**，不要留到後面的輪次。
@@ -344,7 +403,7 @@ ${WOW}
    第 2 輪以後新的 must_fix 只能是：沒修好的、修改造成的新問題、或真正的 blocker（觀眾一眼看得出來）；其他放 nice_to_have，不要每輪加碼。
    **nice_to_have 只能放觀眾用正常速度看不出來的東西。** 角色輪廓破損（凹口、缺角、斜切、手腳和身體接不起來）、沒有描邊的碎片、
    配件讀錯——只要在一般大小的成片裡看得到，就是 must_fix，不論是哪一輪發現的。
-${EYE}
+${EYE(p)}
 6. 寫 out/check/critique.json：
    { "pass": false,
      "peaks": [ { "id": "P1", "ours": [21.5, 25.5], "ref": [24.0, 29.0], "ref_file": "analysis/proxy.mp4", "strip": "out/check/critic/peak_1_vs_ref.jpg", "verdict": "ours_better|equal|ref_better", "why": "具體" } ],
@@ -365,17 +424,22 @@ ${EYE}
 ${ENGINE(p)}
 
 ## 步驟：修改成片${p.round === 'user' ? '（使用者回饋）' : `（評審第 ${p.round} 輪必修）`}
-${p.message}
-
-逐項修改（只動相關鏡頭；共用檔的改動要檢查所有用到的鏡頭），重新輸出 out/video.mp4，同步更新 plan.json（version +1、changelog）。
+${p.message || '（全片性的必修這一輪沒有。）'}
+${p.builderFixes?.length ? `
+各段的製作 agent 已經修好自己段落的必修（${p.builderFixes.join('、')}，每項附 before/after）：不要重做那些鏡頭，
+重新輸出成片時把它們一起渲染進去，並把它們的修正逐項併進 out/check/fixes.json（before/after 照抄它們的檔案；status 是 shared 的那幾項換你處理）。
+` : ''}
+逐項修改（只動相關鏡頭；共用檔的改動要檢查所有用到的鏡頭），每項先用截圖指令看改動處，全部改完再重新輸出 out/video.mp4 一次（整片渲染要好幾分鐘），同步更新 plan.json（version +1、changelog）。
 - 角色的動作一律改 pose 參數（手臂角度、手型、表情）或共用角色定義；**不准在鏡頭裡另外疊畫手臂、手、身體**（會產生肩膀接縫、描邊伸進衣服）。
   需要角色做 rig 做不到的動作，就在共用角色定義新增姿勢或手型，再重截設定圖確認。
-- 改完用 hf_frames 截改動處前後 0.5 秒的全解析度畫面，照人眼清單自己看過再交；動作類的修正附 12fps 連續影格（clip_strip.py），不是單張。
+- 改完用 hf_frames 截改動處前後 0.5 秒的全解析度畫面，照人眼清單自己看過再交；動作類的修正附**成片逐格**的連續影格（clip_strip.py --fps <成片 fps> 或 hf_frames.py --range a:b:f），
+  不是單張也不是 12fps：一格內換姿勢、瞬移只有逐格才看得出來（評審就是這樣抓到的）。
+  逐格的範圍從改動區間開始前 0.3 秒到結束後 0.3 秒——改出來的新問題幾乎都在改動和沒改的交界。
 - 修到高潮（plan.peaks）的，重做 clip_strip.py 對參考的並排圖，確認我們的爆點不輸參考片。
 - 改完重跑 motion_check.py out/video.mp4 --out out/check/motion，確認沒有新的黑格、硬切黑。
 - 重新輸出成片時用引擎的快取（render.mjs --frames 只會重渲改過的鏡頭），不要整片刪掉重渲。
 - 動到角色（翻轉、配件、姿勢）時，用 12fps 看整鏡，確認配件跟著身體轉、沒有新問題。
-${EYE}
+${EYE(p)}
 **每一項都要附證據**，寫 out/check/fixes.json：
 [ { "issue": "…", "shot": "S6", "time": 12.3, "change": "改了什麼", "before": "out/check/fixes/<n>_before.png", "after": "…_after.png", "status": "fixed|cannot" } ]
 before 從修改前的成片同一秒抽格、after 從新成片同一秒抽格（全解析度裁切到問題位置），自己打開確認真的改好；做不到的寫 cannot 和原因。

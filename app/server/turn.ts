@@ -6,7 +6,7 @@ import { runAgent, type AgentResult } from './agents/index.ts';
 import { checkFile } from './contract.ts';
 import { prompts as bootPrompts } from './prompts.ts';
 import { signalOf } from './runner.ts';
-import { CANCELLED, CONFIG, L, ROOT, chat, dirOf, listFiles, load, log, mtime, readText, setStage, update } from './store.ts';
+import { CANCELLED, CONFIG, L, ROOT, chat, dirOf, listFiles, load, log, mtime, qualityOf, readText, setStage, update } from './store.ts';
 import type { Stage } from '../shared/types.ts';
 import type { Phase, Prompts, StepVars } from './types.ts';
 
@@ -47,7 +47,7 @@ export interface TurnResult { ok: boolean; why?: Why; text?: string; missing?: s
 const LIMIT = /usage limit|rate limit|hit your limit|limit reached|quota|credit balance/i;
 export async function turn<P extends Phase>(id: string, phase: P, vars: StepVars[P], must: string[], { session = 'director', who }: TurnOpts = {}): Promise<TurnResult> {
   const j = load(id), d = dirOf(id), signal = signalOf(id);
-  const p = { dir: relative(ROOT, d).replace(/\\/g, '/'), brief: readText(join(d, 'brief.md')) || '', inputs: listFiles(id, 'inputs', /./), config: CONFIG, lang: j.lang || 'zh-TW', ...vars };
+  const p = { dir: relative(ROOT, d).replace(/\\/g, '/'), brief: readText(join(d, 'brief.md')) || '', inputs: listFiles(id, 'inputs', /./), config: CONFIG, lang: j.lang || 'zh-TW', quality: qualityOf(j), ...vars };
   const before = must.map((f) => mtime(join(d, f)));
   const sid = session === 'fresh' ? undefined : session === 'director' ? j.sessionId : (j.sessions || {})[session];
   const label = who || (session === 'fresh' ? 'reviewer' : session);

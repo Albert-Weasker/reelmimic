@@ -27,3 +27,19 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  perception:
+    name: Perception (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install numpy opencv-python-headless scipy librosa pillow pytest ruff
+      - name: Lint (pyflakes rules, bugbear, simplify)
+        working-directory: .claude/skills/video-clone/scripts
+        run: ruff check perception score optimize tests fingerprint.py motion_score.py --select F,E9,B,UP,SIM --ignore UP006,UP035,SIM108,B905,UP038
+      - run: python -m pytest .claude/skills/video-clone/scripts/tests -q
