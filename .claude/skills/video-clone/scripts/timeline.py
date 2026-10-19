@@ -35,10 +35,12 @@ if tA: print(f"  approved → last event: {mins(tA, last):.0f} min")
 
 # phases after approval
 by_phase = collections.defaultdict(lambda: [None, None])
+first_final = min((ts(t['start']) for t in turns if t['phase'] in ('assemble', 'critique')), default=None)
 for t in turns:
     if tA and ts(t['start']) < tA: continue
     ph = {'setup': 'setup', 'cast_qa': 'cast', 'cast_fix': 'cast', 'build_chunk': 'shots', 'shot_qa': 'shots', 'fix_chunk': 'shots',
           'assemble': 'assemble', 'critique': 'final', 'revise': 'final'}.get(t['phase'], t['phase'])
+    if ph == 'shots' and first_final and ts(t['start']) >= first_final: ph = 'final'   # builders fixing final-review items
     s, e = ts(t['start']), ts(t['end']) if t['end'] else last
     b = by_phase[ph]; b[0] = s if b[0] is None or s < b[0] else b[0]; b[1] = e if b[1] is None or e > b[1] else b[1]
 print('\nwall-clock per production phase (min):')

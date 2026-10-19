@@ -30,9 +30,24 @@ describe('cleanRounds', () => {
 });
 
 describe('project settings', () => {
-  test('a new project uses the server defaults', () => {
+  test('a new project is standard quality and uses that preset', () => {
     const { id } = newJob();
-    assert.deepEqual(J.rounds(id), { castRounds: J.CONFIG.castRounds, chunkRounds: J.CONFIG.chunkRounds, finalRounds: J.CONFIG.finalRounds });
+    const P = J.CONFIG.presets.standard;
+    assert.equal(J.snapshot(id).quality, 'standard');
+    assert.deepEqual(J.rounds(id), { castRounds: P.castRounds, chunkRounds: P.chunkRounds, finalRounds: P.finalRounds });
+  });
+  test('a project made before quality modes runs the fine line', () => {
+    const { id } = newJob();
+    const j = J.load(id); delete j.quality; writeFileSync(join(J.dirOf(id), 'job.json'), JSON.stringify(j));
+    assert.equal(J.snapshot(id).quality, 'fine');
+    assert.equal(J.rounds(id).chunkRounds, J.CONFIG.chunkRounds);
+  });
+  test('changing the quality changes the defaults; the own settings still win', () => {
+    const { id } = newJob({ settings: { finalRounds: 4 } });
+    J.setQuality(id, 'fast');
+    assert.equal(J.rounds(id).chunkRounds, J.CONFIG.presets.fast.chunkRounds);
+    assert.equal(J.rounds(id).finalRounds, 4);
+    assert.throws(() => J.setQuality(id, 'ultra'), /quality must be/);
   });
   test('setRounds overrides one limit, and null resets it', () => {
     const { id } = newJob({ settings: { finalRounds: 4 } });
@@ -41,8 +56,8 @@ describe('project settings', () => {
     assert.equal(J.rounds(id).castRounds, 7);
     assert.equal(J.rounds(id).finalRounds, 4);
     const snap = J.setRounds(id, { finalRounds: '' });
-    assert.equal(snap.rounds.values.finalRounds, J.CONFIG.finalRounds);
-    assert.equal(snap.rounds.defaults.castRounds, J.CONFIG.castRounds);
+    assert.equal(snap.rounds.values.finalRounds, J.CONFIG.presets.standard.finalRounds);
+    assert.equal(snap.rounds.defaults.castRounds, J.CONFIG.presets.standard.castRounds);
   });
 });
 

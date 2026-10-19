@@ -40,8 +40,9 @@ app.post('/api/projects', upload.fields([{ name: 'reference', maxCount: 1 }, { n
   let settings;
   try { settings = Object.fromEntries(Object.entries(J.cleanRounds(req.body)).filter(([, v]) => v != null)); }
   catch (e) { for (const f of Object.values(files || {}).flat()) try { unlinkSync(f.path); } catch {} return res.status(400).json({ error: (e as Error).message }); }
+  const quality = ['fast', 'standard', 'fine'].includes(req.body.quality) ? req.body.quality : 'standard';
   const id = slug();
-  const job = J.createJob({ id, title: (title || brief.split('\n')[0] || '未命名').slice(0, 40), agent, brief, lang, settings,
+  const job = J.createJob({ id, title: (title || brief.split('\n')[0] || '未命名').slice(0, 40), agent, brief, lang, settings, quality,
     reference: ref ? { type: 'file', src: 'inputs/reference' + (extname(ref.originalname) || '.mp4') } : { type: 'url', src: url.trim() } });
   if (ref) renameSync(ref.path, join(J.dirOf(id), job.reference.src));
   for (const f of files?.inputs || []) renameSync(f.path, join(J.dirOf(id), 'inputs', fileName(f)));
@@ -98,6 +99,12 @@ app.post('/api/projects/:id/accept', act(J.accept));
 app.post('/api/projects/:id/settings', (req, res) => {
   if (!guard(res, req.params.id)) return;
   try { res.json(J.setRounds(req.params.id, req.body || {})); } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+});
+// Quality mode (fast / standard / fine). Upgrading a finished film starts a new final review under the stricter bar.
+app.post('/api/projects/:id/quality', (req, res) => {
+  const { id } = req.params; if (!guard(res, id)) return;
+  try { if (J.setQuality(id, req.body?.quality).upgrade) J.critique(id).catch((e) => console.error(e)); res.json(J.snapshot(id)); }
+  catch (e) { res.status(400).json({ error: (e as Error).message }); }
 });
 app.get('/api/config', (req, res) => res.json(J.CONFIG));
 app.post('/api/projects/:id/retry', act(J.retry));

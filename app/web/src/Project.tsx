@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { InputKind, Job, Pipeline as PipelineState, RequiredInput, RoundKey, Rounds, Stage } from '../../shared/types.ts';
+import type { InputKind, Job, Pipeline as PipelineState, Quality, RequiredInput, RoundKey, Rounds, Stage } from '../../shared/types.ts';
 import { api } from './api.ts';
-import { I, Orb, Md, Ring, AutoText, useNow, clock, fmt, RoundsEditor } from './ui.tsx';
+import { I, Orb, Md, Ring, AutoText, useNow, clock, fmt, RoundsEditor, QualityPicker, QUALITY_INFO } from './ui.tsx';
 import type { IconName, RoundValues } from './ui.tsx';
 import { Conversation, buildThread, STAGE_DO } from './Chat.tsx';
-import type { Critique as CritiqueData, MustFix, PlanAsset, Shot as ShotData, SnapshotView, Tag } from './types.ts';
+import type { Critique as CritiqueData, MustFix, PlanAsset, Shot as ShotData, SnapshotView, StyleDistance, Tag } from './types.ts';
 
 export const STATUS: Record<Stage, [string, string]> = {
   new: ['排隊中', ''], analyzing: ['拆解中', 'live'], styling: ['判斷風格', 'live'], styled: ['風格完成', ''], planning: ['企劃中', 'live'],
@@ -58,7 +58,7 @@ export function Project({ id }: { id: string }) {
       <a className="back" href="#/"><I n="back" s={2.2} />專案</a>
       <div className="p-head">
         <div className="grow"><h1>{s.plan?.title || job.title}</h1>{s.plan?.title && <div className="brief-line">{s.plan.logline || s.brief}</div>}</div>
-        <div className="p-head-r">{s.rounds && <RoundsButton id={id} r={s.rounds} />}<Status stage={job.stage} /></div>
+        <div className="p-head-r">{s.quality && <QualityButton id={id} q={s.quality} stage={job.stage} durS={s.plan?.format?.duration_s} />}{s.rounds && <RoundsButton id={id} r={s.rounds} pauses={s.quality !== 'fast'} />}<Status stage={job.stage} /></div>
       </div>
       <div className="progress">
         {STEPS.map((x, i) => {
@@ -385,7 +385,31 @@ function Needs({ id, s, file, onZoom }: { id: string; s: SnapshotView; file: Fil
 }
 
 // ---------- review/fix round limits (header button + panel) ----------
-function RoundsButton({ id, r }: { id: string; r: SnapshotView['rounds'] }) {
+// ---------- quality mode (header button + panel) ----------
+// Mid-production a change applies from the next check; on a finished film a stricter mode starts a new final review.
+function QualityButton({ id, q, stage, durS }: { id: string; q: Quality; stage: Stage; durS?: number }) {
+  const [open, setOpen] = useState(false), [saving, setSaving] = useState(false), [err, setErr] = useState(''), ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (!open) return; const k = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); }; addEventListener('pointerdown', k); return () => removeEventListener('pointerdown', k); }, [open]);
+  const done = stage === 'done', before = ['new', 'analyzing', 'styling', 'styled', 'planning', 'replanning', 'plan_review'].includes(stage);
+  const pick = async (next: Quality) => {
+    if (next === q) { setOpen(false); return; }
+    setSaving(true); setErr('');
+    try { await api.quality(id, next); setOpen(false); } catch (e) { setErr((e as Error).message); } finally { setSaving(false); }
+  };
+  return (
+    <div className="rd-wrap" ref={ref}>
+      <button className="tool-chip" onClick={() => setOpen(!open)} aria-expanded={open} title="品質越高，檢查越細、時間越長"><I n="spark" />{QUALITY_INFO[q].label}</button>
+      {open && <div className="rd-pop">
+        <div className="row" style={{ marginBottom: 4 }}><b style={{ fontSize: 15 }}>品質</b><span className="grow" />{saving && <span className="spin-ring" style={{ width: 12, height: 12 }} />}</div>
+        <div className="tiny muted" style={{ marginBottom: 8 }}>{done ? '片已經做好：選更高的品質，會用新的標準重新評審，從這支片接著修。' : before ? '核准企劃後開始計時；時間依片長估計。' : '做到一半也可以改，從下一次檢查開始生效。'}</div>
+        <QualityPicker value={q} current={q} durS={durS} onChange={pick} disabled={saving} showTime={!done} />
+        {err && <div className="small" style={{ color: 'var(--red)', marginTop: 6 }}>{err}</div>}
+      </div>}
+    </div>
+  );
+}
+
+function RoundsButton({ id, r, pauses = true }: { id: string; r: SnapshotView['rounds']; pauses?: boolean }) {
   const [open, setOpen] = useState(false), [saving, setSaving] = useState(false), [err, setErr] = useState(''), ref = useRef<HTMLDivElement>(null);
   const [local, setLocal] = useState(r.values);
   useEffect(() => { if (!saving) setLocal(r.values); }, [r.values.castRounds, r.values.chunkRounds, r.values.finalRounds]);
@@ -403,7 +427,7 @@ function RoundsButton({ id, r }: { id: string; r: SnapshotView['rounds'] }) {
       {open && <div className="rd-pop">
         <div className="row" style={{ marginBottom: 4 }}><b style={{ fontSize: 15 }}>審查輪數</b><span className="grow" />{saving ? <span className="spin-ring" style={{ width: 12, height: 12 }} /> : <span className="tiny faint">已自動儲存</span>}</div>
         <div className="tiny muted" style={{ marginBottom: 6 }}>做到一半也可以改，從下一次檢查開始生效。</div>
-        <RoundsEditor value={Object.fromEntries(Object.entries(local).map(([k, v]) => [k, v === r.defaults[k as RoundKey] ? null : v]))} defaults={r.defaults} min={r.min} max={r.max} onChange={change} />
+        <RoundsEditor value={Object.fromEntries(Object.entries(local).map(([k, v]) => [k, v === r.defaults[k as RoundKey] ? null : v]))} defaults={r.defaults} min={r.min} max={r.max} onChange={change} pauses={pauses} />
         {err && <div className="small" style={{ color: 'var(--red)', marginTop: 6 }}>{err}</div>}
       </div>}
     </div>
@@ -412,6 +436,7 @@ function RoundsButton({ id, r }: { id: string; r: SnapshotView['rounds'] }) {
 
 // ---------- production line ----------
 const CHUNK: Record<string, [string, string]> = { queued: ['排隊中', ''], building: ['製作中', 'live'], reviewing: ['審查中', 'live'], fixing: ['修正中', 'warn'], passed: ['通過', 'ok'], failed: ['未通過', 'bad'], error: ['錯誤', 'bad'], needs_user: ['等你提供', 'warn'], shared_fix: ['導演改共用檔', 'live'], waiting_cast: ['做好了，等角色關', ''], built: ['做好了，等角色關', ''] };
+const AT_LIMIT: [string, string] = ['到上限，先繼續', 'warn'];   // fast mode: round limit reached, production carried on
 const PHASES: [NonNullable<PipelineState['phase']>, string, IconName][] = [['setup', '建置', 'layers'], ['cast', '角色關', 'user'], ['shots', '分段製作', 'film'], ['assemble', '組裝', 'play'], ['final', '最後評審', 'mag']];
 function Pipeline({ s, file, onZoom }: { s: SnapshotView; file: FileUrl; onZoom: Zoom }) {
   const p: PipelineState = s.job.pipeline || {}, rv = s.cast?.review, chunks = Object.entries(p.chunks || {}), R: Partial<Rounds> = s.rounds?.values || {};
@@ -429,13 +454,13 @@ function Pipeline({ s, file, onZoom }: { s: SnapshotView; file: FileUrl; onZoom:
         <div className="row" style={{ marginTop: 22, marginBottom: 10 }}><div className="sub-h" style={{ margin: 0 }}>角色設定圖</div><span className="grow" />
           {p.cast?.state && <span className={`cap ${p.cast.pass ? 'ok' : p.cast.state === 'failed' ? 'bad' : p.cast.state === 'fixing' ? 'warn' : 'live'}`}>{p.cast.pass ? <><I n="check" s={2.4} />已通過</> : ({ reviewing: '審查中', fixing: '導演修正中', failed: '未通過' } as Record<string, string>)[p.cast.state] || p.cast.state}{p.cast.round > 1 ? ` · 第 ${p.cast.round} / ${R.castRounds} 輪` : ''}</span>}</div>
         <div className="scroller">{(s.cast.sheets.filter((f) => /sheet/i.test(f.split('/').pop()!)).length ? s.cast.sheets.filter((f) => /sheet/i.test(f.split('/').pop()!)) : s.cast.sheets).map((f) => <img key={f} className="shot-img" src={file(f)} onClick={() => onZoom(file(f))} />)}</div>
-        {p.cast?.chars && <div className="chunks" style={{ marginTop: 12 }}>{Object.entries(p.cast.chars).map(([k, c]) => { const [t, cl] = CHUNK[c.state] || (c.state === 'waiting_shared' ? ['等導演改骨架', 'warn'] : [c.state, '']); return <div key={k} className={`chunk ${c.state}`}><div className="ch-h"><b style={{ fontSize: 15 }}>{(s.production?.characters || []).find((x) => x.id === k)?.name || k}</b><span className="grow" /><span className={`cap ${cl}`} style={{ height: 22, fontSize: 11.5 }}>{cl === 'live' && <span className="dot live" />}{t}</span></div>{c.round > 1 && <div className="tiny faint">第 {c.round} / {R.castRounds} 輪</div>}</div>; })}</div>}
+        {p.cast?.chars && <div className="chunks" style={{ marginTop: 12 }}>{Object.entries(p.cast.chars).map(([k, c]) => { const [t, cl] = c.acceptedAtLimit ? AT_LIMIT : CHUNK[c.state] || (c.state === 'waiting_shared' ? ['等導演改骨架', 'warn'] : [c.state, '']); return <div key={k} className={`chunk ${c.state}`}><div className="ch-h"><b style={{ fontSize: 15 }}>{(s.production?.characters || []).find((x) => x.id === k)?.name || k}</b><span className="grow" /><span className={`cap ${cl}`} style={{ height: 22, fontSize: 11.5 }}>{cl === 'live' && <span className="dot live" />}{t}</span></div>{c.round > 1 && <div className="tiny faint">第 {c.round} / {R.castRounds} 輪</div>}</div>; })}</div>}
         {rv && !rv.pass && (rv.issues || []).length > 0 && <ul className="issues" onClick={(e) => (e.target as Element).closest('li')?.classList.toggle('open')}>{rv.issues!.map((x, i) => <li key={i}><span className="tagc">{x.character || '角色'}</span><span>{x.what && <b>{x.what}：</b>}{x.issue}{x.fix && <span className="faint"> → {x.fix}</span>}</span></li>)}</ul>}
       </>}
 
       {chunks.length > 0 && <>
         <div className="row" style={{ marginTop: 22, marginBottom: 10 }}><div className="sub-h" style={{ margin: 0 }}>分段</div><span className="grow" /><span className="small faint">{passed} / {chunks.length} 段通過 · 每段做完立刻由獨立審查員檢查</span></div>
-        <div className="chunks">{chunks.map(([k, v]) => { const [t, c] = CHUNK[v.state] || [v.state, '']; return (
+        <div className="chunks">{chunks.map(([k, v]) => { const [t, c] = v.acceptedAtLimit ? AT_LIMIT : CHUNK[v.state] || [v.state, '']; return (
           <div key={k} className={`chunk ${v.state}`}>
             <div className="ch-h"><b>{k}</b><span className="grow" /><span className={`cap ${c}`} style={{ height: 22, fontSize: 11.5 }}>{c === 'live' && <span className="dot live" />}{t}</span></div>
             <div className="small muted">{(v.shots || []).join(' · ')}</div>
@@ -509,7 +534,27 @@ function Result({ s, file, onZoom }: { s: SnapshotView; file: FileUrl; onZoom: Z
         </div>
       </div>}
       {s.critique && <Critique c={s.critique} onSeek={seek} id={id} stage={s.job.stage} file={file} onZoom={onZoom} />}
+      {s.styleDistance && <Measured sd={s.styleDistance} overlay={s.checks.find((c) => c.endsWith('fingerprint_overlay.png'))} file={file} onZoom={onZoom} />}
     </section>
+  );
+}
+// Measured, not judged: compare.py's style_distance.json (scripts/perception) — 0–100, higher = closer to the reference.
+const COMPONENT: Record<string, string> = { camera: '運鏡', palette: '整體色調', pace: '節奏密度', look: '逐鏡色彩', rhythm: '剪接對拍', frames: '畫面構成', tension: '張力起伏', peaks: '高潮形狀' };
+function Measured({ sd, overlay, file, onZoom }: { sd: StyleDistance; overlay?: string; file: FileUrl; onZoom: Zoom }) {
+  const comps = Object.entries(sd.components || {}).filter(([, v]) => typeof v?.score === 'number') as [string, { score: number }][];
+  const findings = (sd.findings || []).filter((f) => f.severity === 'major').slice(0, 8);
+  const head = ([['風格', sd.style], ['結構', sd.structure], ['整體', sd.overall]] as const).filter(([, v]) => typeof v === 'number') as [string, number][];
+  return (
+    <div className="critique measured">
+      <div className="row"><div className="avatar-ai"><I n="chart" /></div><b>和參考片的相似度</b><span className="grow" />
+        {head.map(([k, v]) => <span key={k} className="cap">{`${k} ${Math.round(v)}`}</span>)}</div>
+      <p className="small muted" style={{ margin: '10px 0 0' }}>逐格量測和參考片有多像（0–100，越高越像）：風格＝看起來、動起來像不像；結構＝有沒有照參考段落的起伏走。這不是品質分數——換媒材、換色調這類刻意的不同也會讓它變低；品質看上面的獨立評審。</p>
+      {comps.length > 0 && <div className="scores">{comps.map(([k, v]) => <div key={k} className="score"><div className="row"><span>{COMPONENT[k] || k}</span><b>{Math.round(v.score)}</b></div>
+        <div className="bar"><i style={{ width: `${Math.max(2, Math.min(100, v.score))}%` }} /></div></div>)}</div>}
+      {overlay && <img className="shot-img" style={{ marginTop: 12 }} src={file(overlay)} onClick={() => onZoom(file(overlay))} title="橘：參考片（對齊到我們的時間軸）・藍：我們" />}
+      {findings.length > 0 && <ul className="issues" onClick={(e) => (e.target as Element).closest('li')?.classList.toggle('open')}>
+        {findings.map((f, i) => <li key={i}><span className="tagc">{COMPONENT[f.component] || f.component} · {f.where}</span><span translate="no">{f.text}</span></li>)}</ul>}
+    </div>
   );
 }
 const VERDICT = { ours_better: ['贏過參考片', 'ok'], equal: ['和參考片同級', 'ok'], ref_better: ['輸給參考片', 'bad'] } as const;

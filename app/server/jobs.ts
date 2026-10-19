@@ -8,14 +8,15 @@
 //       → critiquing: final panel (fresh critic: continuity/pacing/seams, verifies earlier fixes) ⇄ revising
 //       → done   (needs_user items never trigger a revise: they pause the job and ask the user)
 // Quality is checked where defects are born (each character, each chunk), not only at the end.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, statfsSync, cpSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, statfsSync, cpSync, renameSync, rmSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { runAgent, type AgentResult } from './agents/index.ts';
+import { checkOutputs, parseJSON, repairPrompt } from './outputs.ts';
 import { prompts as bootPrompts } from './prompts.ts';
-import { ROUND_KEYS } from '../shared/types.ts';
-import type { AgentKind, CastCharProgress, ChatMessage, ChunkProgress, Config, EngineSnapshot, Job, Lang, LogEntry, LogEvent, Need, NeedRequest, Pipeline, Plan, ProjectSummary, Reference, RequiredInput, Review, RoundKey, Rounds, Snapshot, Stage } from '../shared/types.ts';
+import { QUALITIES, ROUND_KEYS } from '../shared/types.ts';
+import type { AgentKind, CastCharProgress, ChatMessage, ChunkProgress, Config, EngineSnapshot, Job, Lang, LogEntry, LogEvent, Need, NeedRequest, Pipeline, Plan, ProjectSummary, Quality, QualityPreset, Reference, RequiredInput, Review, RoundKey, Rounds, Snapshot, Stage } from '../shared/types.ts';
 import type { CastMember, Chunk, ChunkReview, Critique, Phase, Production, Prompts, SharedItem, ShotEntry, StepVars } from './types.ts';
 export { ROUND_KEYS };
 // prompts.ts is re-imported when it changes, so prompt fixes reach the next agent turn without restarting running jobs
@@ -35,11 +36,21 @@ const noPython = (e: Error) => `${PY} could not be started (${e.message}). Insta
 const passed = (rv: Review) => { const L = rv.issues || []; return L.length && L.every((x) => x.severity) ? !L.some((x) => x.severity !== 'polish') : !!rv.pass; };
 const shotPassed = (s: ShotEntry) => { const L = s.issues || []; return L.length && L.every((x) => x.severity) ? !L.some((x) => x.severity !== 'polish') : !!s.pass; };
 
-export const CONFIG: Config = {
-  builders: +(process.env.BUILDERS || 6),          // parallel shot builders per project (12 cores / 32 GB measured)
+const FINE: Rounds = {
   castRounds: +(process.env.CAST_ROUNDS || 3),     // cast gate: review/fix rounds before asking the user
   chunkRounds: +(process.env.CHUNK_ROUNDS || 3),   // shot line: review/fix rounds per chunk
   finalRounds: +(process.env.FINAL_ROUNDS || 2),   // final panel: automatic revise rounds
+};
+export const CONFIG: Config = {
+  ...FINE,                                          // the 'fine' line (projects made before modes existed)
+  // Quality modes (shared/types.ts). The prompts change with the mode too: what blocks, and where every frame is checked.
+  presets: {
+    // a round is one review: 2 = review, fix, review again
+    fast: { castRounds: 2, chunkRounds: 2, finalRounds: 1, converge: 0, pauseAtLimit: false },
+    standard: { castRounds: 2, chunkRounds: 3, finalRounds: 2, converge: 1, pauseAtLimit: true },
+    fine: { ...FINE, converge: 3, pauseAtLimit: true },
+  },
+  builders: +(process.env.BUILDERS || 6),          // parallel shot builders per project (12 cores / 32 GB measured)
   maxAgentsGlobal: +(process.env.MAX_AGENTS || 12), // all projects together (CLI rate limits, CPU/GPU for renders)
   maxReviews: +(process.env.MAX_REVIEWS || 4),      // shot reviews at once per project: each one opens Chrome to grab frames;
                                                     // 13 at once meant 80–200 Chrome processes and screenshot timeouts
@@ -51,7 +62,10 @@ export const CONFIG: Config = {
 // Review/fix round limits: CONFIG holds the defaults; a project can set its own (job.settings), read at every check so a
 // change applies from the next round on. When a limit is reached the job pauses for the user instead of looping.
 export const ROUND_RANGE = { min: 1, max: 10 };
-export function rounds(id: string): Rounds { const s = load(id).settings || {}; return Object.fromEntries(ROUND_KEYS.map((k) => [k, s[k] ?? CONFIG[k]])) as Rounds; }
+export const qualityOf = (j: Job): Quality => (QUALITIES.includes(j.quality as Quality) ? j.quality! : 'fine');
+export const preset = (id: string): QualityPreset => CONFIG.presets[qualityOf(load(id))];
+const presetRounds = (q: Quality) => Object.fromEntries(ROUND_KEYS.map((k) => [k, CONFIG.presets[q][k]])) as Rounds;
+export function rounds(id: string): Rounds { const j = load(id), s = j.settings || {}, p = CONFIG.presets[qualityOf(j)]; return Object.fromEntries(ROUND_KEYS.map((k) => [k, s[k] ?? p[k]])) as Rounds; }
 // Validates { castRounds?, chunkRounds?, finalRounds? } (whole numbers 1–10; '' / null = back to the default). Throws on bad input.
 export function cleanRounds(input: Record<string, unknown> = {}) {
   const out: Partial<Record<RoundKey, number | null>> = {};
@@ -71,6 +85,23 @@ export function setRounds(id: string, input: Record<string, unknown>) {
   return snapshot(id);
 }
 
+// Change the quality mode. Mid-production it applies from the next check (rounds and prompts read it every turn).
+// A finished film moved to a stricter mode goes back to the final review under the new bar, fixing from this film.
+const RANK: Record<Quality, number> = { fast: 0, standard: 1, fine: 2 };
+export const QUALITY_NAME: Record<Quality, [string, string]> = { fast: ['快速', 'Fast'], standard: ['標準', 'Standard'], fine: ['精緻', 'Fine'] };
+export function setQuality(id: string, q: unknown): { upgrade: boolean } {
+  if (!QUALITIES.includes(q as Quality)) throw new Error(`quality must be one of ${QUALITIES.join(', ')}`);
+  const j = load(id), from = qualityOf(j), to = q as Quality;
+  if (from === to) return { upgrade: false };
+  const upgrade = RANK[to] > RANK[from] && j.stage === 'done' && !busy(id) && existsSync(join(dirOf(id), 'out', 'video.mp4'));
+  const [zh, en] = QUALITY_NAME[to];
+  update(id, (x) => { x.quality = to; });
+  chat(id, 'system', upgrade
+    ? L(id, `品質升級為「${zh}」：用新的標準重新評審，從這支片接著修。`, `Quality upgraded to ${en}: the film goes back to the final review under the new bar and is fixed from here.`)
+    : L(id, `品質改為「${zh}」，從下一次檢查開始生效。`, `Quality set to ${en}; it applies from the next check.`));
+  return { upgrade };
+}
+
 export type BusEvent = { type: 'job'; job: Job } | { type: 'log'; ev: LogEvent };
 export const bus = new EventEmitter<{ job: [id: string, ev: BusEvent] }>(); bus.setMaxListeners(100);
 const running = new Map<string, Set<AbortController>>();
@@ -83,7 +114,15 @@ const jpath = (id: string) => join(dirOf(id), 'job.json');
 // System messages in the project's language (Simplified Chinese is converted from the Chinese text by the UI).
 const L = (id: string, zh: string, en: string) => (load(id).lang === 'en' ? en : zh);
 export function load(id: string): Job { return JSON.parse(readFileSync(jpath(id), 'utf8')); }
-function save(job: Job) { job.updatedAt = now(); writeFileSync(jpath(job.id), JSON.stringify(job, null, 1)); bus.emit('job', job.id, { type: 'job', job }); return job; }
+// Atomic: write a temp file, then rename over job.json. A full disk once truncated job.json to 0 bytes mid-write and the
+// project could no longer be opened; now a failed write leaves the previous job.json intact.
+function save(job: Job) {
+  job.updatedAt = now();
+  const f = jpath(job.id), tmp = `${f}.${process.pid}.tmp`;
+  try { writeFileSync(tmp, JSON.stringify(job, null, 1)); renameSync(tmp, f); }
+  catch (e) { try { rmSync(tmp, { force: true }); } catch {} throw e; }
+  bus.emit('job', job.id, { type: 'job', job }); return job;
+}
 function update(id: string, fn: (j: Job) => void) { const j = load(id); fn(j); return save(j); }
 function log(id: string, ev: LogEntry) {
   const e = { ts: now(), ...ev }; bus.emit('job', id, { type: 'log', ev: e });
@@ -93,11 +132,19 @@ function log(id: string, ev: LogEntry) {
 }
 
 // On startup nothing is running, so a job still marked as working was cut off by a restart: say so instead of pretending.
+// Projects whose job.json can be read; a broken one (e.g. truncated by a full disk before writes were atomic) is
+// reported and skipped instead of stopping the server from starting.
+function readableJobs(): string[] {
+  return (existsSync(PROJECTS) ? readdirSync(PROJECTS) : []).filter((d) => {
+    if (!existsSync(jpath(d))) return false;
+    try { load(d); return true; } catch (e) { console.error(`skipping project ${d}: job.json unreadable (${(e as Error).message})`); return false; }
+  });
+}
+
 export function recoverOrphans(): string[] {
   const cut: string[] = [];
   const WORK = ['analyzing', 'styling', 'planning', 'replanning', 'producing', 'revising', 'critiquing'];
-  for (const d of existsSync(PROJECTS) ? readdirSync(PROJECTS) : []) {
-    if (!existsSync(jpath(d))) continue;
+  for (const d of readableJobs()) {
     const j = load(d);
     if (!WORK.includes(j.stage)) continue;
     cut.push(d);
@@ -114,7 +161,7 @@ export function autoResume(ids: string[], gapMs = 5000) {
     retry(id).catch((e) => console.error('auto-resume', id, e));
   }, (i + 1) * gapMs));
 }
-const readJSON = <T>(p: string): T | null => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+const readJSON = <T>(p: string): T | null => { try { return parseJSON(readFileSync(p, 'utf8')) as T; } catch { return null; } };
 const readText = (p: string): string | null => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
 const oneOf = (v: string | null | undefined, ...L: string[]) => !!v && L.includes(v);
 const mtime = (p: string) => (existsSync(p) ? statSync(p).mtimeMs : 0);
@@ -133,7 +180,7 @@ function release() { active--; const w = waiters.shift(); if (w) w.r(); }
 
 export function listJobs(): ProjectSummary[] {
   if (!existsSync(PROJECTS)) return [];
-  return readdirSync(PROJECTS).filter((d) => existsSync(jpath(d))).map((d) => { const j = load(d); return { id: j.id, title: readJSON<Plan>(join(dirOf(d), 'plan.json'))?.title || j.title, stage: j.stage, agent: j.agent, updatedAt: j.updatedAt, needs: (j.needs || []).length, thumb: existsSync(join(dirOf(d), 'out', 'check', 'style_1.jpg')) ? 'out/check/style_1.jpg' : existsSync(join(dirOf(d), 'analysis', 'sheet_1fps.jpg')) ? 'analysis/sheet_1fps.jpg' : null }; })
+  return readableJobs().map((d) => { const j = load(d); return { id: j.id, title: readJSON<Plan>(join(dirOf(d), 'plan.json'))?.title || j.title, stage: j.stage, agent: j.agent, updatedAt: j.updatedAt, needs: (j.needs || []).length, thumb: existsSync(join(dirOf(d), 'out', 'check', 'style_1.jpg')) ? 'out/check/style_1.jpg' : existsSync(join(dirOf(d), 'analysis', 'sheet_1fps.jpg')) ? 'analysis/sheet_1fps.jpg' : null }; })
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
 
@@ -148,20 +195,22 @@ export function snapshot(id: string): Snapshot {
     plan, storyboard: readText(join(d, 'STORYBOARD.md')), assetsMd: readText(join(d, 'assets', 'ASSETS.md')),
     checks: list('out/check', /\.(jpg|png)$/i).slice(0, 24), video: existsSync(join(d, 'out', 'video.mp4')) ? 'out/video.mp4' : null,
     critique: readJSON(join(d, 'out', 'check', 'critique.json')),
+    styleDistance: readJSON(join(d, 'out', 'check', 'style_distance.json')),
     cast: { sheets: list('out/check/cast', /sheet[^/]*\.(jpg|png)$/i).slice(0, 8), review: readJSON<Review>(join(d, 'out', 'check', 'cast', 'review.json')) },
     shots: list('out/check/shots', /_sheet\.(jpg|png)$/i).slice(0, 60),
     production: readJSON(join(d, 'build', 'production.json')),
     lyrics: readJSON(join(d, 'analysis', 'lyrics', 'subs.json')),
     requiredInputs: requiredInputs(id, plan, job),
-    rounds: { values: rounds(id), defaults: Object.fromEntries(ROUND_KEYS.map((k) => [k, CONFIG[k]])) as Rounds, ...ROUND_RANGE },
+    rounds: { values: rounds(id), defaults: presetRounds(qualityOf(job)), ...ROUND_RANGE },
+    quality: qualityOf(job),
     inputs: list('inputs', /./),
   };
 }
 
-export function createJob({ id, title, agent, brief, reference, lang = 'zh-TW', settings = {} }: { id: string; title: string; agent: AgentKind; brief: string; reference: Reference; lang?: Lang; settings?: Partial<Rounds> }) {
+export function createJob({ id, title, agent, brief, reference, lang = 'zh-TW', settings = {}, quality = 'standard' }: { id: string; title: string; agent: AgentKind; brief: string; reference: Reference; lang?: Lang; settings?: Partial<Rounds>; quality?: Quality }) {
   const d = dirOf(id); mkdirSync(join(d, 'inputs'), { recursive: true }); mkdirSync(join(d, 'analysis'), { recursive: true });
   writeFileSync(join(d, 'brief.md'), brief || '');
-  const job: Job = { id, title, agent, lang, reference, settings, stage: 'new', sessionId: null, sessions: {}, createdAt: now(), chat: [], log: [], needs: [], waived: [], pipeline: {} };
+  const job: Job = { id, title, agent, lang, reference, settings, quality, stage: 'new', sessionId: null, sessions: {}, createdAt: now(), chat: [], log: [], needs: [], waived: [], pipeline: {} };
   save(job);
   return job;
 }
@@ -272,19 +321,28 @@ interface TurnResult { ok: boolean; text?: string; missing?: string[]; stderr?: 
 async function turn<P extends Phase>(id: string, phase: P, vars: StepVars[P], must: string[], { session = 'director', who }: TurnOpts = {}): Promise<TurnResult> {
   const j = load(id), d = dirOf(id);
   const ac = new AbortController(); if (!running.has(id)) running.set(id, new Set()); running.get(id)!.add(ac);
-  const p = { dir: relative(ROOT, d).replace(/\\/g, '/'), brief: readText(join(d, 'brief.md')) || '', inputs: snapshot(id).inputs, config: CONFIG, lang: j.lang || 'zh-TW', ...vars };
+  const p = { dir: relative(ROOT, d).replace(/\\/g, '/'), brief: readText(join(d, 'brief.md')) || '', inputs: snapshot(id).inputs, config: CONFIG, lang: j.lang || 'zh-TW', quality: qualityOf(j), ...vars };
   const before = must.map((f) => mtime(join(d, f)));
   const sid = session === 'fresh' ? undefined : session === 'director' ? j.sessionId : (j.sessions || {})[session];
   const label = who || (session === 'fresh' ? 'reviewer' : session);
   await slot(phase);
   log(id, { type: 'turn', state: 'start', phase, who: label });
   let r: AgentResult;
+  let broken: { file: string; problem: string }[];
+  const onEvent = (e: Parameters<NonNullable<Parameters<typeof runAgent>[0]['onEvent']>>[0]) => {
+    if (e.type === 'session' && session !== 'fresh') update(id, (jj) => { if (session === 'director') jj.sessionId = e.id; else { jj.sessions = jj.sessions || {}; jj.sessions[session] = e.id; } });
+    if (e.type !== 'done') log(id, { ...e, who: label });
+  };
   try {
-    r = await runAgent({ kind: j.agent, cwd: ROOT, prompt: (await livePrompts())[phase](p), sessionId: sid, signal: ac.signal,
-      onEvent: (e) => {
-        if (e.type === 'session' && session !== 'fresh') update(id, (jj) => { if (session === 'director') jj.sessionId = e.id; else { jj.sessions = jj.sessions || {}; jj.sessions[session] = e.id; } });
-        if (e.type !== 'done') log(id, { ...e, who: label });
-      } });
+    r = await runAgent({ kind: j.agent, cwd: ROOT, prompt: (await livePrompts())[phase](p), sessionId: sid, signal: ac.signal, onEvent });
+    // the files it wrote must be readable: one repair turn in the same conversation (it knows what it meant), still in this slot
+    broken = r.ok && !ac.signal.aborted ? checkOutputs(d, must) : [];
+    if (broken.length) {
+      log(id, { type: 'error', text: `輸出檔讀不懂，請同一個 agent 修正：${broken.map((b) => `${b.file}（${b.problem}）`).join('；')}`, who: label });
+      const fix = await runAgent({ kind: j.agent, cwd: ROOT, prompt: repairPrompt(p.dir, broken), sessionId: r.sessionId ?? sid, signal: ac.signal, onEvent });
+      broken = ac.signal.aborted ? [] : checkOutputs(d, must);
+      if (!fix.ok) r = { ...r, ok: false, stderr: fix.stderr, lastError: fix.lastError };
+    }
   } finally { release(); running.get(id)?.delete(ac); }
   log(id, { type: 'turn', state: 'end', phase, who: label, ok: !!r?.ok && !ac.signal.aborted });
   if (ac.signal.aborted) return { ok: false, aborted: true };
@@ -293,6 +351,7 @@ async function turn<P extends Phase>(id: string, phase: P, vars: StepVars[P], mu
   // changes nothing. Existing outputs count then, so the user isn't stuck retrying a finished step.
   if (missing.length && r.ok && load(id).retryPending) missing = missing.filter((f) => !existsSync(join(d, f)));
   if (load(id).retryPending) update(id, (x) => { delete x.retryPending; });
+  missing = [...missing, ...broken.filter((b) => !missing.includes(b.file)).map((b) => `${b.file}（${b.problem}）`)]
   if (r.text) chat(id, session === 'fresh' ? 'critic' : session === 'director' ? 'agent' : 'builder', r.text, { phase, who: label });
   return { ok: r.ok && !missing.length, text: r.text, missing, stderr: r.stderr, lastError: r.lastError };
 }
@@ -511,7 +570,13 @@ async function production(id: string, { fresh = false } = {}): Promise<boolean> 
       if (!bad.length) { set({ state: 'passed' }); prerender(id, c); return true; }
       // one blocker left at the limit: one more round instead of pausing (a real run sat 23 minutes waiting to say "fix it")
       const left = bad.flatMap((e) => e.issues || []).filter((x) => x.severity !== 'polish').length;
-      if (round >= rounds(id).chunkRounds + (left <= 1 ? 1 : 0)) { set({ state: 'failed', open: bad.length }); return false; }
+      if (round >= rounds(id).chunkRounds + (left <= 1 ? 1 : 0)) {
+        if (preset(id).pauseAtLimit) { set({ state: 'failed', open: bad.length }); return false; }
+        // fast mode: carry on with what is left (the final review sees the whole film; the user can upgrade the mode)
+        set({ state: 'passed', open: bad.length, acceptedAtLimit: true }); prerender(id, c);
+        chat(id, 'system', L(id, `快速模式：${c.id} 審了 ${round} 輪，還有 ${left} 個問題，先繼續製作（最後評審會再看整支片）`, `Fast mode: ${c.id} had ${round} review rounds and ${left} issue${left > 1 ? 's' : ''} left; carrying on (the final review sees the whole film)`));
+        return true;
+      }
       set({ state: 'fixing' });
       const f = await turn(id, 'fix_chunk', { chunk: c, bad, round, message: load(id).userNote }, [`out/check/shots/${c.id}.fixes.json`], { session: key, who: key });
       if (!f.ok) { set({ state: 'error' }); return false; }
@@ -578,7 +643,10 @@ async function castGate(id: string, prev: Pipeline): Promise<boolean> {
       const rv = readJSON<Review>(join(d, 'out', 'check', 'cast', `review_${c.id}.json`)) || {};
       if (collectNeeds(id, rv.needs_user, `cast-qa-${c.id}`)) { setC(c.id, { state: 'needs_user' }); return 'needs'; }
       if (passed(rv)) { setC(c.id, { state: 'passed' }); return 'passed'; }
-      if (round >= rounds(id).castRounds) { setC(c.id, { state: 'failed', issues: (rv.issues || []).length }); return 'failed'; }
+      if (round >= rounds(id).castRounds) {
+        if (preset(id).pauseAtLimit) { setC(c.id, { state: 'failed', issues: (rv.issues || []).length }); return 'failed'; }
+        setC(c.id, { state: 'passed', issues: (rv.issues || []).length, acceptedAtLimit: true }); return 'passed';
+      }
       setC(c.id, { state: 'fixing' });
       const f = await turn(id, 'cast_fix', { issues: rv.issues || [], round, character: c, rigFiles: prod.rig_files || [] }, [c.sheet, `out/check/cast/fixes_${c.id}.json`], { session: `cast-${c.id}`, who: `cast-${c.id}` });
       if (!f.ok) { setC(c.id, { state: 'error' }); return 'error'; }
@@ -622,7 +690,10 @@ async function castSerial(id: string, prev: Pipeline, firstReview?: Review | nul
     }
     if (collectNeeds(id, rv.needs_user, 'cast-qa')) return pause(id);
     if (passed(rv)) { pipe(id, (p) => { p.cast!.pass = true; p.cast!.state = 'passed'; }); chat(id, 'system', L(id, `角色關通過（第 ${round} 輪）`, `Characters passed (round ${round})`)); break; }
-    if (round >= rounds(id).castRounds) { pipe(id, (p) => { p.cast!.state = 'failed'; }); chat(id, 'system', L(id, `角色關 ${round} 輪仍未通過，請你看角色設定圖決定`, `Characters still not passing after ${round} rounds. Please check the character sheets and decide`)); setStage(id, 'needs_input'); return false; }
+    if (round >= rounds(id).castRounds) {
+      if (!preset(id).pauseAtLimit) { pipe(id, (p) => { p.cast!.pass = true; p.cast!.state = 'passed'; p.cast!.acceptedAtLimit = true; }); chat(id, 'system', L(id, `快速模式：角色關審了 ${round} 輪，還有 ${(rv.issues || []).length} 個問題，先繼續製作`, `Fast mode: characters had ${round} review rounds with ${(rv.issues || []).length} issue(s) left; carrying on`)); break; }
+      pipe(id, (p) => { p.cast!.state = 'failed'; }); chat(id, 'system', L(id, `角色關 ${round} 輪仍未通過，請你看角色設定圖決定`, `Characters still not passing after ${round} rounds. Please check the character sheets and decide`)); setStage(id, 'needs_input'); return false;
+    }
     pipe(id, (p) => { p.cast!.state = 'fixing'; });
     const f = await turn(id, 'cast_fix', { issues: rv.issues || [], round }, ['out/check/cast/sheet.jpg', 'out/check/cast/fixes.json'], { who: 'director' });
     if (!f.ok) return fail(id, 'producing', f);
@@ -688,6 +759,38 @@ function sharedLock<T>(key: string, fn: () => Promise<T>): Promise<T> { const pr
 function pause(id: string) { setStage(id, 'needs_input'); return false; }
 
 // ---------- final panel: seams, continuity, pacing; verifies every earlier fix ----------
+type MustFix = NonNullable<Critique['must_fix']>[number];
+// A must-fix item is a segment's when every shot it names is in that one segment.
+function splitBySegment(id: string, must: MustFix[]): { local: Map<Chunk, MustFix[]>; global: MustFix[] } {
+  const chunks = readJSON<Production>(join(dirOf(id), 'build', 'production.json'))?.chunks || [];
+  const local = new Map<Chunk, MustFix[]>(), global: MustFix[] = [];
+  for (const m of must) {
+    const shots = [...new Set(String(m.shot || '').match(/S\d+/g) || [])];
+    const owners = new Set(shots.map((s) => chunks.find((c) => c.shots.includes(s))));
+    const [owner] = [...owners];
+    if (shots.length && owners.size === 1 && owner) local.set(owner, [...(local.get(owner) || []), m]);
+    else global.push(m);
+  }
+  return { local, global };
+}
+
+// The builders fix their own segments in parallel (their conversations still hold how each shot was made). Returns
+// the fixes files for the director's render and evidence, or null when a builder turn failed (the job is in error).
+async function fixSegments(id: string, local: Map<Chunk, MustFix[]>, round: number): Promise<string[] | null> {
+  if (!local.size) return [];
+  chat(id, 'system', L(id, `${[...local.keys()].map((c) => c.id).join('、')} 的必修交回各段的製作 agent 同時修，全片性的交給導演`,
+    `Segment items go back to their builders (${[...local.keys()].map((c) => c.id).join(', ')}) in parallel; film-wide ones to the director`));
+  const results = await Promise.all([...local.entries()].map(([c, items]) => {
+    const bad: ShotEntry[] = [...new Set(items.flatMap((m) => String(m.shot).match(/S\d+/g) || []))]
+      .map((sid) => ({ id: sid, issues: items.filter((m) => String(m.shot).includes(sid)).map((m) => ({ issue: `${m.time != null ? `[${m.time}s] ` : ''}${m.issue}`, fix: m.fix })) }));
+    return turn(id, 'fix_chunk', { chunk: c, bad, round: `final-${round}`, final: true }, [`out/check/shots/${c.id}.fixes.json`], { session: `builder-${c.id}`, who: `builder-${c.id}` })
+      .then((r) => ({ c, r }));
+  }));
+  const failed = results.find((x) => !x.r.ok);
+  if (failed) { fail(id, 'revising', failed.r); return null; }
+  return results.map((x) => `out/check/shots/${x.c.id}.fixes.json`);
+}
+
 async function finalPanel(id: string) {
   const d = dirOf(id);
   let prevMust = Infinity;
@@ -703,14 +806,29 @@ async function finalPanel(id: string) {
     update(id, (j) => { j.critiqueRounds = total; j.lastCritique = { pass: !must.length, must: must.length, at: now() }; });
     const needs = collectNeeds(id, c.needs_user, 'critic');
     if (!must.length) { chat(id, 'system', needs ? L(id, '評審：導演能修的都過了，剩下需要你提供的項目', 'Final review: everything the director can fix is done. What is left needs your input') : L(id, `評審通過（第 ${total} 輪）`, `Final review passed (round ${total})`)); setStage(id, needs ? 'needs_input' : 'done'); return; }
-    // Past the limit, keep going while the list is short (≤ 2) and still shrinking, up to 3 extra rounds: a real run went
-    // 8 → 3 → 2 → 1 and stopped with its last, most visible defect unfixed. A list that stops shrinking stops the loop.
-    const converging = must.length <= 2 && must.length < prevMust && round <= rounds(id).finalRounds + 3;
+    // Past the limit, keep going while the list is clearly shrinking — short (≤ 3) or at most half of the last round's —
+    // up to 3 extra rounds. Real runs went 8 → 3 → 2 → 1 and 9 → 3 and stopped with visible defects (a character
+    // teleporting between two frames) unfixed. A list that stops shrinking stops the loop.
+    const shrinking = must.length < prevMust && (must.length <= 3 || must.length <= prevMust / 2);
+    const converging = shrinking && round <= rounds(id).finalRounds + preset(id).converge;
     prevMust = must.length;
-    if (round > rounds(id).finalRounds && !converging) { chat(id, 'system', L(id, `評審仍有 ${must.length} 項必修，已達自動修改上限，請你決定`, `The final review still has ${must.length} must-fix item${must.length > 1 ? 's' : ''} and the automatic fix limit is reached. Please decide`)); setStage(id, 'done'); return; }
-    const msg = must.map((m, i) => `${i + 1}. [${m.shot || '全片'}${m.time != null ? ' ' + m.time + 's' : ''}] ${m.issue}${m.fix ? ' → 建議：' + m.fix : ''}`).join('\n');
+    if (round > rounds(id).finalRounds && !converging) {
+      chat(id, 'system', preset(id).pauseAtLimit
+        ? L(id, `評審仍有 ${must.length} 項必修，已達自動修改上限，請你決定`, `The final review still has ${must.length} must-fix item${must.length > 1 ? 's' : ''} and the automatic fix limit is reached. Please decide`)
+        : L(id, `快速模式交件：評審還列了 ${must.length} 項可以再修（在評審報告裡）。想修掉就把品質升級，會從這支片接著修。`, `Fast mode delivered: the final review lists ${must.length} more item${must.length > 1 ? 's' : ''} to fix (see the review). Upgrade the quality to fix them, starting from this film.`));
+      setStage(id, 'done'); return;
+    }
     chat(id, 'system', L(id, `評審第 ${total} 輪：${must.length} 項必修，交回導演（每項要附修改前後對照）`, `Final review round ${total}: ${must.length} must-fix item${must.length > 1 ? 's' : ''}, sent back to the director (each fix needs before/after proof)`));
-    if (!(await step(id, 'revising', 'revise', { message: msg, round }, ['out/video.mp4', 'out/check/fixes.json']))) return;
+    setStage(id, 'revising', { error: null, failed: null });
+    // Items that belong to one segment go back to the builder who made it, all segments at once; the rest (shared
+    // files, the mix, items across segments) and the render stay with the director. Real runs: the director fixing
+    // 9–12 items alone was the longest step after approval (14–17 min), and its edits to shots it had not built
+    // brought back the very defect being fixed (a character teleporting between two frames) in another shot.
+    const { local, global } = splitBySegment(id, must);
+    const builderFixes = await fixSegments(id, local, round);
+    if (builderFixes === null) return;
+    const msg = global.map((m, i) => `${i + 1}. [${m.shot || '全片'}${m.time != null ? ' ' + m.time + 's' : ''}] ${m.issue}${m.fix ? ' → 建議：' + m.fix : ''}`).join('\n');
+    if (!(await step(id, 'revising', 'revise', { message: msg, round, builderFixes }, ['out/video.mp4', 'out/check/fixes.json']))) return;
   }
 }
 
