@@ -8,6 +8,9 @@ reference shot number it maps to, and start_s/end_s). Analyses our video with th
     out/check/compare_<id>.jpg   reference frames (top row) vs ours (bottom row), 3 moments each, with the stats
     out/check/compare.json       per shot: reference vs ours — camera kind/pace/speed, brightness, contrast, dark ratio, colourfulness
     out/check/compare_all.jpg    every pair at mid-shot on one sheet
+    out/check/style_distance.json  measured distance (perception/): scores per component and shot + findings in words
+                                   (fitted eases, move timing, tension peaks, cut/beat phase, cadence, colour)
+    out/check/fingerprint_overlay.png  reference tension and camera speed time-warped onto ours
 Open the images and score each shot (see the engine skill's Review section). Numbers flag, eyes decide.
 """
 import argparse, json, os, sys
@@ -68,6 +71,11 @@ def main():
         flag = "" if not rc or rc.get("pace") == oc.get("pace") or (rc.get("pace") != "still" and oc.get("pace") != "still") else "  ← motion mismatch"
         print(f"{r['id']} ↔ ref #{r['ref_shot']}: ours {oc.get('kind')} {oc.get('pace')} vs ref {rc.get('kind')} {rc.get('pace')}{flag}")
     print("wrote", out_dir)
+    try:   # the measured comparison: style_distance.json + fingerprint_overlay.png (perception/, docs/COMPILER.md)
+        from perception.cli import project, report
+        print(report(project(P, a.video)))
+    except Exception as e:
+        print("style distance skipped:", e)
 
 
 if __name__ == "__main__":

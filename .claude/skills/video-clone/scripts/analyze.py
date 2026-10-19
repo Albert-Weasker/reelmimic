@@ -21,7 +21,7 @@ Lessons baked in (each one broke a real run):
 """
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, collections
 
-ANALYZE_VERSION = 2   # bump when report.json gains fields, so cached analyses are redone
+ANALYZE_VERSION = 3   # bump when report.json gains fields, so cached analyses are redone
 CACHE = os.path.join(os.path.expanduser("~"), ".reelmimic", "cache", "analysis")
 
 FFMPEG_FALLBACK = os.environ.get("FFMPEG_DIR", "")   # folder with ffmpeg/ffprobe when they are not on PATH
@@ -311,6 +311,23 @@ def flashes(path, dur):
     return out
 
 
+def fingerprint(out, rep):
+    """Style Fingerprint (perception/, docs/COMPILER.md): camera trajectories with fitted eases, tension and its peaks,
+    cut/beat phase, cadence. Written to fingerprint.json + fingerprint.png; the report keeps a summary."""
+    try:
+        from perception import plot
+        from perception.cli import reference, _save
+        fp = reference(out, rep)
+    except Exception as e:   # never lose the rest of the analysis over it
+        print("fingerprint skipped:", e)
+        return None
+    _save(fp, os.path.join(out, "fingerprint.json"))
+    plot.single(fp, os.path.join(out, "fingerprint.png"))
+    r = fp["rhythm"]
+    return {"file": "fingerprint.json", "cadence": fp["cadence"], "peaks": fp["peaks"], "static_overlay": fp["static_overlay"],
+            "rhythm": {k: r[k] for k in ("on_beat_ratio", "mean_offset_frames", "phase_mean", "phase_R", "cuts_per_beat") if k in r}}
+
+
 def cache_key(src):
     """URL → the URL; local file → its size plus the first and last 4 MB (the same file copied into another project hits)."""
     h = hashlib.sha1(f"v{ANALYZE_VERSION}|".encode())
@@ -333,9 +350,12 @@ def summary(rep, out):
         print(f"audio   {au['bpm']} bpm, first beat {au['first_beat']}s, noise floor {au['noise_floor_db']} dB, phase_inverted={au['phase_inverted']}")
         print(f"best 30s windows: {[c['start'] for c in au['best_30s_starts']]}")
         print(f"peak candidates (build → hit): {[(p['t'], p['kind']) for p in au.get('peak_candidates', [])]}")
+    fp = rep.get("fingerprint")
+    if fp:
+        print(f"motion  {fp['cadence'].get('label', '?')} ({fp['cadence'].get('drawings_per_second', '?')} drawings/s), tension peaks at {[p['t'] for p in fp['peaks']]}")
     if rep.get("flashes"): print(f"flash frames: {rep['flashes']}")
-    elif au.get("silent"): print("audio   SILENT —", au["note"])
-    else: print("audio   none")
+    if au.get("silent"): print("audio   SILENT —", au["note"])
+    elif not au.get("present"): print("audio   none")
     print("wrote", os.path.join(out, "report.json"))
 
 
@@ -377,6 +397,8 @@ def main():
                                "camera_kinds": sorted({k for x in sd for k in x["camera"]["kind"]})}
     if rep["audio"].get("bpm") and lens:
         rep["pacing"]["mean_shot_beats"] = round(rep["pacing"]["mean_shot_s"] / rep["audio"]["beat_seconds"], 1)
+    if info["width"]:
+        rep["fingerprint"] = fingerprint(a.out, rep)
     with open(os.path.join(a.out, "report.json"), "w", encoding="utf-8") as f:
         json.dump(rep, f, ensure_ascii=False, indent=1)
     try:   # cache the whole analysis folder (the agents later read source/proxy from it too)

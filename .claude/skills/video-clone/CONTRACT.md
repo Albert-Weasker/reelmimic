@@ -2,6 +2,8 @@
 
 每支影片一個資料夾 `projects/<id>/`。Agent（Claude Code 或 Codex）與 App 後端只透過這些檔案溝通，
 所以兩種 agent 都能接，前端也只要讀檔案就能畫出畫面。**Agent 必須照這裡的路徑與欄位寫檔。**
+**JSON 檔必須是標準 JSON**（不能有註解、結尾逗號、單引號）：系統每一步都會檢查必產的 JSON 能不能解析、最外層型態對不對，
+壞掉的會請同一個 agent 修一次，再壞就停下來。
 
 ```
 projects/<id>/
@@ -10,6 +12,8 @@ projects/<id>/
   inputs/                  使用者上傳的素材 / 音檔 / LRC（唯讀）
   analysis/
     report.json            analyze.py 產出（量測數據）
+    fingerprint.json       analyze.py 產出：Style Fingerprint（每格運鏡、每鏡擬合的緩動、張力曲線與高潮形狀、切點對拍、cadence、色彩），
+                           fingerprint.png 是同一時間軸的圖；格式見 docs/COMPILER.md
     sheet_1fps.jpg         每秒一格總覽
     sheet_scenes.jpg       每個鏡頭中間格
     STYLE.md               ← agent：風格拆解（給人看）
@@ -107,6 +111,12 @@ projects/<id>/
 ```
 build/production.json            導演：{ cast_sheet, characters, chunks: [{id, shots}], shot_files, how_to_preview, how_to_render, shared_readonly,
                                  prerender: { cwd, cmd 含 {start} {end} } ← 有影格快取的引擎才寫；每段通過審查後系統自動在背景渲染那段的正式影格 }
+build/score/film.json            Motion Score（docs/COMPILER.md）：{ version, fps, bpm, offset, duration, cues: { 名稱: 時間 } }
+build/score/shots/<shot>.json    每鏡一檔：{ id, start, end, ref_shot, cadence, camera: { base: {x,y,zoom,rot}, moves: [{ at, dur|until, to|by, ease, from_ref }], shakes, drift },
+                                 tracks }；時間寫法 "B12-2f"、"P1_hit+1b"、"S+0.25s"；motion_score.py validate / predict / compile
+out/check/score_predict.json     motion_score.py predict：不渲染就預測的每鏡運鏡 vs 參考片（camera_score、findings）
+out/check/score_optimize.json    motion_score.py optimize：每組鏡頭的 before/after 成本、changes（改了哪個運鏡的什麼，原值記在 "tuned"）
+out/check/score_tuned/           optimize 的提案（同 build/score 格式）；--apply 才寫回 build/score
 out/check/cast/sheet_<角色>.jpg   每個角色一張設定圖（正面/3/4/側面/表情/姿勢）；sheet.jpg = 全角色並排
 build/assets/cast/<角色>.js      每個角色一個定義檔（多角色時各自由一組審查＋修正同時進行，不能共用一個檔）
 out/check/cast/review_<角色>.json / fixes_<角色>.json  個別角色的審查與修正（要改共用骨架的項目 status: shared，由導演統一改）
@@ -119,6 +129,10 @@ out/check/shots/<Cn>.fixes.json  製作 agent 修正：[{ shot, issue, change, b
 out/check/critique.json          最後評審：{ pass, peaks:[{id, ours, ref, strip, verdict: ours_better|equal|ref_better, why}], scores, score_notes,
                                  shots:[{id, score, why}], must_fix, needs_user, verified_fixes, nice_to_have, summary }
                                  任何高潮 ref_better 都不會通過（系統會自動補成必修）
+out/check/fingerprint.json       compare.py：我們成片的 Style Fingerprint（鏡頭 id = plan 的 shot id）
+out/check/style_distance.json    compare.py：和參考片的實測距離 { overall, components:{tension, peaks, camera, rhythm, look, frames: {score…}},
+                                 shots:[{id, ref_shot, camera, look}], findings:[{component, where, severity: major|minor, text}] }
+out/check/fingerprint_overlay.png 參考片的張力與運鏡速度（DTW 對齊到我們的時間軸）疊在我們的上面
 out/check/motion/motion.json     motion_check.py：硬切點、長時間靜止、黑格、閃白、片尾硬切黑（每項附前後影格 strip）
 out/check/fixes.json             導演修成片：[{ issue, shot, time, change, before, after, status }]
 analysis/lyrics/subs.lrc|.json   使用者貼的歌詞，自動對時結果（每句時間與匹配度）
