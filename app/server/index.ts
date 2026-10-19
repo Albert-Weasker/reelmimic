@@ -7,7 +7,6 @@ import { existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { createAgentCache } from './agents-cache.ts';
 import * as J from './jobs.ts';
-import { L, chat } from './store.ts';
 // Ctrl+C / kill: stop the agents first (the next start marks their turns interrupted, and Retry resumes them)
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { J.stopAll(); setTimeout(() => process.exit(0), 800); });
 
@@ -70,17 +69,7 @@ app.post('/api/projects/:id/inputs', upload.array('inputs', 20), async (req, res
   }
   // ?for=<required input id>: these files answer that item (any file name); lyrics text/timing is handled there
   if (!attach && req.query.for) J.provideInput(req.params.id, String(req.query.for), saved);
-  // The upload of the song is the one moment waiting lyrics finally get timed - report the outcome
-  // instead of dropping it. The upload response must not wait on the alignment either way.
-  else if (!attach) J.alignIfReady(req.params.id)
-    .then((r) => {
-      if (r && !r.ok) chat(req.params.id, 'system', L(req.params.id,
-        '無法為歌詞對時；流程會繼續，之後重新貼上歌詞即可再試一次',
-        'Lyrics could not be timed; the run continues, and pasting them again later will retry the alignment'));
-    })
-    .catch((e: Error) => chat(req.params.id, 'system', L(req.params.id,
-      '無法為歌詞對時；流程會繼續',
-      `Lyrics could not be timed (${e.message}); the run continues`)));
+  else if (!attach) void J.alignIfReadyWithNotice(req.params.id);   // background: lyrics waiting for music
   J.touch(req.params.id);
   res.json({ ...J.snapshot(req.params.id), saved });
 });

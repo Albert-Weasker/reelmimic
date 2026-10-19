@@ -13,7 +13,7 @@
 import { appendFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, cpSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import { finalPanel } from './final.ts';
-import { openInputs, alignIfReady, requiredInputs } from './inputs.ts';
+import { openInputs, alignIfReadyWithNotice, requiredInputs } from './inputs.ts';
 import { flushNotes, fromAnalysis, fromStyle, preProduction } from './preprod.ts';
 import { production } from './production.ts';
 import { stopPrerenders } from './prerender.ts';
@@ -27,7 +27,7 @@ import type { Production } from './types.ts';
 
 export { ROUND_KEYS };
 export { CANCELLED, CONFIG, PROJECTS, ROOT, ROUND_RANGE, bus, cleanRounds, dirOf, load, rounds, touch, type BusEvent } from './store.ts';
-export { alignIfReady, openInputs, provideInput, saveLyrics, unwaive, waive, type LyricsResult } from './inputs.ts';
+export { alignIfReady, alignIfReadyWithNotice, openInputs, provideInput, saveLyrics, unwaive, waive, type LyricsResult } from './inputs.ts';
 export { stopAll } from './runner.ts';
 export const busy = active;   // a flow is running for this project (runner.ts allows one at a time)
 // Stop the project's flow and every process it started; background renders queued behind them don't start either.
@@ -175,7 +175,7 @@ export async function approve(id: string) {
   return run(id, () => approveFlow(id));
 }
 async function approveFlow(id: string) {
-  await alignIfReady(id).catch(() => null);   // lyrics pasted before the music arrived: time them now, before anything is built
+  await alignIfReadyWithNotice(id);   // lyrics pasted before the music arrived: time them now, before anything is built
   update(id, (j) => { j.approvedAt = now(); j.approvedPlanVersion = readJSON<Plan>(join(dirOf(id), 'plan.json'))?.version; j.engineSnapshot = snapshotEngine(id); j.pipeline = {}; j.sessions = j.approvedAtPrev ? {} : Object.fromEntries(Object.entries(j.sessions || {}).filter(([k]) => k.startsWith('cast-'))); j.approvedAtPrev = true; j.needs = []; j.userNote = null; j.critiqueRounds = 0; });
   diskWarning(id);
   chat(id, 'system', L(id, `企劃已核准，開始生產：角色關 → 分段製作（每段做完立刻審）→ 組裝 → 最後評審`, 'Plan approved. Production: characters → parts built and reviewed as they finish → assembly → final review'));

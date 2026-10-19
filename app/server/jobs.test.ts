@@ -2,12 +2,14 @@
 // Runs against a throwaway projects folder (REELMIMIC_PROJECTS), never the real one. No agent is started.
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const TMP = mkdtempSync(join(tmpdir(), 'reelmimic-test-'));
 process.env.REELMIMIC_PROJECTS = TMP;
+// Make every python spawn fail in this file's process: the alignment test needs the failure path.
+process.env.PYTHON = 'rr-no-such-python';
 const J = await import('./jobs.ts');
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
@@ -146,6 +148,7 @@ describe('project list', () => {
 });
 
 const S = await import('./store.ts');
+const I = await import('./inputs.ts');
 describe('event log', () => {
   test('an event goes to events.jsonl and the snapshot, without rewriting job.json', () => {
     const { id } = newJob();
@@ -174,5 +177,21 @@ describe('event log', () => {
     assert.ok(!('log' in JSON.parse(readFileSync(join(d, 'job.json'), 'utf8'))));
     assert.match(readFileSync(join(d, 'logs', 'events.jsonl'), 'utf8'), /"old"/);
     assert.equal((J.snapshot(id).job.log[0] as { text?: string }).text, 'old');
+  });
+});
+
+describe('lyric alignment notices', () => {
+  test('a failed alignment is surfaced in the chat instead of vanishing', async () => {
+    const { id } = newJob();
+    mkdirSync(join(J.dirOf(id), 'inputs'), { recursive: true });
+    writeFileSync(join(J.dirOf(id), 'inputs', 'lyrics.txt'), 'la la la\n');
+    writeFileSync(join(J.dirOf(id), 'inputs', 'song.mp3'), '');
+    writePlan(id, { music: { file: 'inputs/song.mp3' } });
+    const r = await I.alignIfReadyWithNotice(id);
+    assert.ok(r === null || r.ok === false, 'alignment must not report success without python');
+    const last = J.load(id).chat.at(-1);
+    assert.equal(last?.role, 'system');
+    assert.match(last?.text || '', /could not be timed|無法為歌詞對時/);
+    assert.ok(!existsSync(join(J.dirOf(id), 'analysis', 'lyrics', 'subs.lrc')), 'no subs.lrc without a run');
   });
 });
