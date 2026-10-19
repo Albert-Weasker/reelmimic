@@ -10,7 +10,7 @@
 // This file is the server's API over all of that: the user's actions, each one run as the project's single flow
 // (runner.ts), plus the project list and snapshot. Every review/fix gate shares one loop (review.ts); one agent turn is
 // turn.ts; job.json and helpers are store.ts.
-import { appendFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, cpSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, cpSync, rmSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import { finalPanel } from './final.ts';
 import { openInputs, alignIfReadyWithNotice, requiredInputs } from './inputs.ts';
@@ -111,8 +111,17 @@ export function setQuality(id: string, q: unknown): { upgrade: boolean } {
   return { upgrade };
 }
 
+// A crash between writing job.json's temp file and renaming it leaves job.json.<pid>.tmp behind: swept at startup.
+function sweepTempJobs() {
+  for (const d of existsSync(PROJECTS) ? readdirSync(PROJECTS) : []) {
+    const dir = dirOf(d);
+    try { for (const f of readdirSync(dir)) if (/^job\.json\.\d+\.tmp$/.test(f)) rmSync(join(dir, f), { force: true }); } catch {}
+  }
+}
+
 // On startup nothing is running, so a job still marked as working was cut off by a restart: say so instead of pretending.
 export function recoverOrphans(): string[] {
+  sweepTempJobs();
   const cut: string[] = [];
   const WORK = ['analyzing', 'styling', 'planning', 'replanning', 'producing', 'revising', 'critiquing'];
   for (const d of readableJobs()) {

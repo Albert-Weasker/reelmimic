@@ -380,6 +380,20 @@ describe('pauses', () => {
   });
 });
 
+describe('final review routing', () => {
+  test('items reach the shots they name, matched whole: S10 is not S1', async () => {
+    const { shotIssues } = await import('./final.ts');
+    const by = Object.fromEntries(shotIssues([{ shot: 'S1', issue: 'a' }, { shot: 'S10', issue: 'b' }, { shot: 'S11/S1', issue: 'c' }]).map((e) => [e.id, (e.issues || []).map((x) => x.issue)]));
+    assert.deepEqual(by, { S1: ['a', 'c'], S10: ['b'], S11: ['c'] });
+  });
+  test('a job.json temp file left by a crash is swept at startup', () => {
+    const id = newProject('plan_review'), tmp = join(J.dirOf(id), 'job.json.12345.tmp');
+    writeFileSync(tmp, '{');
+    J.recoverOrphans();
+    assert.ok(!existsSync(tmp));
+  });
+});
+
 describe('quality modes', () => {
   test('fast: a segment and a character at their limit carry on, and the film is delivered without pausing', async () => {
     S = base({ castPass: () => false, shotPass: (s) => s !== 'S2', critique: () => ({ must: 3 }) });

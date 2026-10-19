@@ -25,6 +25,13 @@ function splitBySegment(id: string, must: MustFix): { local: Map<Chunk, Item[]>;
   return { local, global };
 }
 
+// The items as a builder's per-shot issue list. Shot ids are matched whole: a substring test handed S10's item to S1 too.
+export function shotIssues(items: Item[]): ShotEntry[] {
+  const named = items.map((m) => ({ m, shots: new Set(String(m.shot || '').match(/S\d+/g) || []) }));
+  return [...new Set(named.flatMap((x) => [...x.shots]))]
+    .map((sid) => ({ id: sid, issues: named.filter((x) => x.shots.has(sid)).map(({ m }) => ({ issue: `${m.time != null ? `[${m.time}s] ` : ''}${m.issue}`, fix: m.fix })) }));
+}
+
 // Segment items go back to the builders who made them, all at once (their conversations still hold how each shot was
 // made). Real runs: the director fixing 9–12 items alone was the longest step after approval (14–17 min), and its edits
 // to shots it had not built brought back the very defect being fixed in another shot. Returns the fixes files for the
@@ -34,9 +41,7 @@ async function fixSegments(id: string, local: Map<Chunk, Item[]>, round: number)
   const ids = [...local.keys()].map((c) => c.id);
   chat(id, 'system', L(id, `${ids.join('、')} 的必修交回各段的製作 agent 同時修，全片性的交給導演`, `Segment items go back to their builders (${ids.join(', ')}) in parallel; film-wide ones to the director`));
   const results = await Promise.all([...local.entries()].map(async ([c, items]) => {
-    const bad: ShotEntry[] = [...new Set(items.flatMap((m) => String(m.shot).match(/S\d+/g) || []))]
-      .map((sid) => ({ id: sid, issues: items.filter((m) => String(m.shot).includes(sid)).map((m) => ({ issue: `${m.time != null ? `[${m.time}s] ` : ''}${m.issue}`, fix: m.fix })) }));
-    const r = await turn(id, 'fix_chunk', { chunk: c, bad, round: `final-${round}`, final: true }, [`out/check/shots/${c.id}.fixes.json`], { session: `builder-${c.id}`, who: `builder-${c.id}` });
+    const r = await turn(id, 'fix_chunk', { chunk: c, bad: shotIssues(items), round: `final-${round}`, final: true }, [`out/check/shots/${c.id}.fixes.json`], { session: `builder-${c.id}`, who: `builder-${c.id}` });
     return { c, r };
   }));
   const failed = results.find((x) => !x.r.ok);
