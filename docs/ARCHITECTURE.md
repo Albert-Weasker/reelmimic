@@ -90,10 +90,10 @@ final critic (fresh): the climaxes against the reference, then the whole film; v
 | standard | 2 / 3 / 2, +1 while shrinking | one-frame pose changes in the climax shots, everything visible at normal speed | pauses for the user |
 | fine | 3 / 3 / 2, +3 while shrinking | every pose change checked frame by frame; a climax must beat the reference | pauses for the user |
 
-New projects default to fine, the only mode measured on real runs so far; the UI marks the other times as estimates.
+New projects default to fine. Measured on real runs with the same inputs (30 s, 9 shots): fine 222 min (all scores ≥ 4, two 5s), fast 79 min (scores 4, two 3s, every climax still beats the reference). Standard is not measured yet and is shown as an estimate.
 Upgrading a finished film (for example fast → fine) starts a new final review under the stricter bar and fixes from
 the current film. Projects made before modes existed run the fine line. Times shown in the UI
-(`QUALITY_MINUTES`, scaled by film length) come from real runs: fine 167–222 min for a 30 s film.
+(`QUALITY_MINUTES`, scaled by film length) come from real runs: fine 167–222 min, fast 79 min for a 30 s film.
 
 Design points:
 - **Catch defects where they are made**: characters are reviewed before shots, every shot as soon as it is built —
