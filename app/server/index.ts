@@ -40,7 +40,7 @@ app.post('/api/projects', upload.fields([{ name: 'reference', maxCount: 1 }, { n
   let settings;
   try { settings = Object.fromEntries(Object.entries(J.cleanRounds(req.body)).filter(([, v]) => v != null)); }
   catch (e) { for (const f of Object.values(files || {}).flat()) try { unlinkSync(f.path); } catch {} return res.status(400).json({ error: (e as Error).message }); }
-  const quality = ['fast', 'standard', 'fine'].includes(req.body.quality) ? req.body.quality : 'standard';
+  const quality = ['fast', 'standard', 'fine'].includes(req.body.quality) ? req.body.quality : undefined;   // undefined → DEFAULT_QUALITY
   const id = slug();
   const job = J.createJob({ id, title: (title || brief.split('\n')[0] || '未命名').slice(0, 40), agent, brief, lang, settings, quality,
     reference: ref ? { type: 'file', src: 'inputs/reference' + (extname(ref.originalname) || '.mp4') } : { type: 'url', src: url.trim() } });

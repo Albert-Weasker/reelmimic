@@ -31,7 +31,7 @@ const EN: Record<string, string> = {
   '先拆解與企劃，你核准前不會開始生成 · Ctrl+Enter 送出': 'Analysis and planning come first — nothing renders until you approve · Ctrl+Enter to send',
   '先拆解與企劃，你核准前不會開始生成': 'Analysis and planning come first — nothing renders until you approve', 'Ctrl+Enter 送出': 'Ctrl+Enter to send',
   // quality modes
-  '到上限，先繼續': 'At the limit, carried on',   '快速': 'Fast', '標準': 'Standard', '精緻': 'Fine', '品質': 'Quality', '目前': 'current', '品質越高，檢查越細、時間越長': 'Higher quality: closer checks, more time',
+  '到上限，先繼續': 'At the limit, carried on',   '（預估）': ' (estimate)', '快速': 'Fast', '標準': 'Standard', '精緻': 'Fine', '品質': 'Quality', '目前': 'current', '品質越高，檢查越細、時間越長': 'Higher quality: closer checks, more time',
   '先看方向：只修一眼看得出的硬傷，到上限就先交件': 'See the direction first: fixes only defects you notice at once, delivers at the round limit',
   '大部分情況：高潮逐格檢查，其他鏡頭看連續影格': 'Most projects: climaxes checked frame by frame, other shots as motion strips',
   '要交出去的成品：每個姿勢變化逐格檢查，高潮要贏參考片': 'A film to deliver: every pose change checked frame by frame, climaxes must beat the reference',

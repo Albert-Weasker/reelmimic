@@ -30,10 +30,10 @@ describe('cleanRounds', () => {
 });
 
 describe('project settings', () => {
-  test('a new project is standard quality and uses that preset', () => {
+  test('a new project gets the default (measured) quality and uses that preset', () => {
     const { id } = newJob();
-    const P = J.CONFIG.presets.standard;
-    assert.equal(J.snapshot(id).quality, 'standard');
+    const P = J.CONFIG.presets.fine;
+    assert.equal(J.snapshot(id).quality, 'fine');
     assert.deepEqual(J.rounds(id), { castRounds: P.castRounds, chunkRounds: P.chunkRounds, finalRounds: P.finalRounds });
   });
   test('a project made before quality modes runs the fine line', () => {
@@ -56,8 +56,8 @@ describe('project settings', () => {
     assert.equal(J.rounds(id).castRounds, 7);
     assert.equal(J.rounds(id).finalRounds, 4);
     const snap = J.setRounds(id, { finalRounds: '' });
-    assert.equal(snap.rounds.values.finalRounds, J.CONFIG.presets.standard.finalRounds);
-    assert.equal(snap.rounds.defaults.castRounds, J.CONFIG.presets.standard.castRounds);
+    assert.equal(snap.rounds.values.finalRounds, J.CONFIG.presets.fine.finalRounds);
+    assert.equal(snap.rounds.defaults.castRounds, J.CONFIG.presets.fine.castRounds);
   });
 });
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode, TextareaHTMLAttributes } from 'react';
-import { QUALITIES, QUALITY_MINUTES } from '../../shared/types.ts';
+import { QUALITIES, QUALITY_MEASURED, QUALITY_MINUTES } from '../../shared/types.ts';
 import type { Quality, RoundKey, Rounds } from '../../shared/types.ts';
 
 // ---------- icons (SF-Symbols-like strokes) ----------
@@ -191,7 +191,7 @@ export function QualityPicker({ value, onChange, durS, current, disabled, showTi
     <div className="q-pick" role="radiogroup">
       {QUALITIES.map((q) => (
         <button key={q} role="radio" aria-checked={value === q} className={`q-opt ${value === q ? 'on' : ''}`} disabled={disabled} onClick={() => onChange(q)}>
-          <div className="row"><b>{QUALITY_INFO[q].label}</b>{current === q && <span className="tiny faint">目前</span>}<span className="grow" />{showTime && <span className="tiny q-time">{estimate(q, durS)}</span>}</div>
+          <div className="row"><b>{QUALITY_INFO[q].label}</b>{current === q && <span className="tiny faint">目前</span>}<span className="grow" />{showTime && <span className="tiny q-time">{estimate(q, durS)}{!QUALITY_MEASURED[q] && <span className="faint">（預估）</span>}</span>}</div>
           <div className="tiny muted">{QUALITY_INFO[q].what}</div>
         </button>
       ))}

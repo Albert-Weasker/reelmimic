@@ -90,6 +90,7 @@ final critic (fresh): the climaxes against the reference, then the whole film; v
 | standard | 2 / 3 / 2, +1 while shrinking | one-frame pose changes in the climax shots, everything visible at normal speed | pauses for the user |
 | fine | 3 / 3 / 2, +3 while shrinking | every pose change checked frame by frame; a climax must beat the reference | pauses for the user |
 
+New projects default to fine, the only mode measured on real runs so far; the UI marks the other times as estimates.
 Upgrading a finished film (for example fast → fine) starts a new final review under the stricter bar and fixes from
 the current film. Projects made before modes existed run the fine line. Times shown in the UI
 (`QUALITY_MINUTES`, scaled by film length) come from real runs: fine 167–222 min for a 30 s film.

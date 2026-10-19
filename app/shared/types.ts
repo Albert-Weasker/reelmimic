@@ -24,6 +24,9 @@ export interface QualityPreset extends Rounds {
 // Minutes from plan approval to the finished film, for a 30 s film (scaled by length in the UI). From real runs:
 // fine 167 and 222 min (6upkv, v8z8p); fast and standard are first estimates until measured.
 export const QUALITY_MINUTES: Record<Quality, [number, number]> = { fast: [50, 80], standard: [100, 150], fine: [170, 230] };
+// Which of those come from real runs (the others are shown as estimates). New projects default to a measured mode.
+export const QUALITY_MEASURED: Record<Quality, boolean> = { fast: false, standard: false, fine: true };
+export const DEFAULT_QUALITY: Quality = 'fine';
 
 export interface Config extends Rounds {
   presets: Record<Quality, QualityPreset>;

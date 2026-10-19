@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { DEFAULT_QUALITY } from '../../shared/types.ts';
 import type { AgentKind, AgentStatus, Config, ProjectSummary, Quality } from '../../shared/types.ts';
 import { api } from './api.ts';
 import { I, BrandMark, Orb, Seg, AutoText, ago, RoundsEditor, QualityPicker, QUALITY_INFO, estimate } from './ui.tsx';
@@ -91,7 +92,7 @@ function Composer({ agents }: { agents?: Partial<AgentStatus> }) {
   const [brief, setBrief] = useState(''), [agent, setAgent] = useState<AgentKind>('claude'), [inputs, setInputs] = useState<File[]>([]);
   const [drag, setDrag] = useState(false), [busy, setBusy] = useState(false), [err, setErr] = useState('');
   const [rounds, setRounds] = useState<RoundValues>({}), [roundsOpen, setRoundsOpen] = useState(false), [config, setConfig] = useState<Config | null>(null);
-  const [quality, setQuality] = useState<Quality>('standard'), [qualityOpen, setQualityOpen] = useState(false);
+  const [quality, setQuality] = useState<Quality>(DEFAULT_QUALITY), [qualityOpen, setQualityOpen] = useState(false);
   useEffect(() => { api.config().then(setConfig).catch(() => {}); }, []);
   const preset = config?.presets?.[quality], defaults = preset ? { castRounds: preset.castRounds, chunkRounds: preset.chunkRounds, finalRounds: preset.finalRounds } : null;
   const customRounds = Object.entries(rounds).filter(([, v]) => v != null);
@@ -143,7 +144,7 @@ function Composer({ agents }: { agents?: Partial<AgentStatus> }) {
           <button className={`tool-chip ${inputs.length ? 'on' : ''}`} onClick={() => assets.current!.click()} title="配樂、歌詞、圖片、Logo、自家角色設計圖">
             <I n="clip" />素材{inputs.length > 0 && <span className="n">{inputs.length}</span>}</button>
           <input ref={assets} type="file" multiple hidden onChange={(e) => setInputs([...e.target.files!])} />
-          <button className={`tool-chip ${quality !== 'standard' ? 'on' : ''}`} onClick={() => { setQualityOpen(!qualityOpen); setRoundsOpen(false); }} aria-expanded={qualityOpen} title="品質越高，檢查越細、時間越長">
+          <button className={`tool-chip ${quality !== DEFAULT_QUALITY ? 'on' : ''}`} onClick={() => { setQualityOpen(!qualityOpen); setRoundsOpen(false); }} aria-expanded={qualityOpen} title="品質越高，檢查越細、時間越長">
             <I n="spark" />{QUALITY_INFO[quality].label}</button>
           {defaults && <button className={`tool-chip ${customRounds.length ? 'on' : ''}`} onClick={() => { setRoundsOpen(!roundsOpen); setQualityOpen(false); }} aria-expanded={roundsOpen} title="每一關最多審查、修改幾輪">
             <I n="sliders" /><span className="lbl-wide">審查輪數</span>{customRounds.length > 0 && <span className="n">{customRounds.length}</span>}</button>}

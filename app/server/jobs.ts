@@ -15,7 +15,7 @@ import { EventEmitter } from 'node:events';
 import { runAgent, type AgentResult } from './agents/index.ts';
 import { checkOutputs, parseJSON, repairPrompt } from './outputs.ts';
 import { prompts as bootPrompts } from './prompts.ts';
-import { QUALITIES, ROUND_KEYS } from '../shared/types.ts';
+import { DEFAULT_QUALITY, QUALITIES, ROUND_KEYS } from '../shared/types.ts';
 import type { AgentKind, CastCharProgress, ChatMessage, ChunkProgress, Config, EngineSnapshot, Job, Lang, LogEntry, LogEvent, Need, NeedRequest, Pipeline, Plan, ProjectSummary, Quality, QualityPreset, Reference, RequiredInput, Review, RoundKey, Rounds, Snapshot, Stage } from '../shared/types.ts';
 import type { CastMember, Chunk, ChunkReview, Critique, Phase, Production, Prompts, SharedItem, ShotEntry, StepVars } from './types.ts';
 export { ROUND_KEYS };
@@ -207,7 +207,7 @@ export function snapshot(id: string): Snapshot {
   };
 }
 
-export function createJob({ id, title, agent, brief, reference, lang = 'zh-TW', settings = {}, quality = 'standard' }: { id: string; title: string; agent: AgentKind; brief: string; reference: Reference; lang?: Lang; settings?: Partial<Rounds>; quality?: Quality }) {
+export function createJob({ id, title, agent, brief, reference, lang = 'zh-TW', settings = {}, quality = DEFAULT_QUALITY }: { id: string; title: string; agent: AgentKind; brief: string; reference: Reference; lang?: Lang; settings?: Partial<Rounds>; quality?: Quality }) {
   const d = dirOf(id); mkdirSync(join(d, 'inputs'), { recursive: true }); mkdirSync(join(d, 'analysis'), { recursive: true });
   writeFileSync(join(d, 'brief.md'), brief || '');
   const job: Job = { id, title, agent, lang, reference, settings, quality, stage: 'new', sessionId: null, sessions: {}, createdAt: now(), chat: [], log: [], needs: [], waived: [], pipeline: {} };
