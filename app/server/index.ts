@@ -69,7 +69,7 @@ app.post('/api/projects/:id/inputs', upload.array('inputs', 20), async (req, res
   }
   // ?for=<required input id>: these files answer that item (any file name); lyrics text/timing is handled there
   if (!attach && req.query.for) J.provideInput(req.params.id, String(req.query.for), saved);
-  else if (!attach) J.alignIfReady(req.params.id).catch(() => null);   // background: lyrics waiting for music
+  else if (!attach) void J.alignIfReadyWithNotice(req.params.id);   // background: lyrics waiting for music
   J.touch(req.params.id);
   res.json({ ...J.snapshot(req.params.id), saved });
 });
