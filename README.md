@@ -126,6 +126,7 @@ committed. See [`secrets.example.json`](secrets.example.json) for the format.
 | Key | What it's for |
 |---|---|
 | `YATING_KEY` | Yating's Taiwanese Mandarin voices, for narration |
+| `ELEVENLABS_API_KEY` | Optional ElevenLabs TTS for workflows using the shared audio engine; also install `elevenlabs` in ReelMimic's configured Python environment |
 | `PIXABAY_KEY`, `FREESOUND_KEY` | More images, music and sound effects you're allowed to use (optional, Openverse works without a key) |
 | `FFMPEG_DIR`, `CHROME_PATH`, `CODEX_BIN`, `PYTHON` | Where to find these tools if they're not on your PATH |
 | `CODEX_SANDBOX` | Codex sandbox mode (default `danger-full-access`, like Claude Code with Bash allowed; `workspace-write` blocks the Chrome renderer) |
