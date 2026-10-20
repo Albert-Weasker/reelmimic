@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentEvent } from '../../shared/types.ts';
-import { parseClaude, parseCodex } from './index.ts';
+import { feedStdout, noteDropped, parseClaude, parseCodex } from './index.ts';
 
 const run = (parse: typeof parseClaude, lines: object[]) => {
   const events: AgentEvent[] = [], st = { sessionId: null, text: '', ok: false, cost: null, lastError: '' };
@@ -64,4 +64,33 @@ test('long tool details are shortened', () => {
   const e = events[0] as Extract<AgentEvent, { type: 'tool' }>;
   assert.equal(e.detail.length, 401);
   assert.ok(e.detail.endsWith('…'));
+});
+
+test('non-JSON stdout lines are counted, valid lines still parse', () => {
+  const events: AgentEvent[] = [], st = { sessionId: null, text: '', ok: false, cost: null, lastError: '' };
+  const drop = { n: 0, sample: '' };
+  const emit = (e: AgentEvent) => { if (e.type === 'error') st.lastError = e.text; events.push(e); };
+  feedStdout('not json {', true, emit, st, drop);
+  feedStdout('{"type":"result","subtype":"success","is_error":false,"result":"hi"}', true, emit, st, drop);
+  assert.equal(drop.n, 1);
+  assert.equal(drop.sample, 'not json {');
+  assert.equal(st.text, 'hi');
+  assert.equal(st.lastError, '');
+});
+
+test('an empty turn with dropped lines names the cause instead of going out blank', () => {
+  const events: AgentEvent[] = [], st = { sessionId: null, text: '', ok: false, cost: null, lastError: '' };
+  const emit = (e: AgentEvent) => { if (e.type === 'error') st.lastError = e.text; events.push(e); };
+  noteDropped(st, { n: 3, sample: 'warn: x' }, emit);
+  assert.equal(events.length, 1);
+  assert.match(st.lastError, /dropped 3 non-JSON stdout/);
+});
+
+test('noteDropped stays quiet when there is output, no drops, or a prior error', () => {
+  const events: AgentEvent[] = [];
+  const emit = (e: AgentEvent) => events.push(e);
+  noteDropped({ sessionId: null, text: 'hi', ok: true, cost: null, lastError: '' }, { n: 2, sample: 'x' }, emit);
+  noteDropped({ sessionId: null, text: '', ok: false, cost: null, lastError: '' }, { n: 0, sample: '' }, emit);
+  noteDropped({ sessionId: null, text: '', ok: false, cost: null, lastError: 'boom' }, { n: 2, sample: 'x' }, emit);
+  assert.equal(events.length, 0);
 });
