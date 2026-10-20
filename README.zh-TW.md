@@ -135,7 +135,7 @@ Claude Code 會自己讀到 repo 裡的 skills，Codex 會讀 `AGENTS.md`，不�
 
 ## Star 趨勢
 
-[![Star History Chart](https://api.star-history.com/svg?repos=edenfunf/reelmimic&type=Date)](https://star-history.com/#edenfunf/reelmimic&Date)
+[![Star History Chart](docs/assets/star-history.svg)](https://star-history.com/#edenfunf/reelmimic&Date)
 
 ## 授權
 

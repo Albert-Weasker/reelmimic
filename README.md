@@ -168,7 +168,7 @@ unless you pass `--title`, and a rerun of the same video won't post it twice.
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=edenfunf/reelmimic&type=Date)](https://star-history.com/#edenfunf/reelmimic&Date)
+[![Star History Chart](docs/assets/star-history.svg)](https://star-history.com/#edenfunf/reelmimic&Date)
 
 ## License
 
