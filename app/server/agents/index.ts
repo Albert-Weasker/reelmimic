@@ -105,10 +105,26 @@ export function parseCodex(obj: Json, emit: Emit, st: TurnState) {
   if (obj.type === 'turn.failed' || obj.type === 'error') { st.ok = false; emit({ type: 'error', text: short(obj.error?.message || obj.message || obj, 400) }); }
 }
 
+export interface DropTrack { n: number; sample: string }
+// One stdout line: valid JSON goes to the parsers; anything else is counted
+// (CLI warnings, truncated lines) instead of vanishing without a trace.
+export function feedStdout(l: string, isClaude: boolean, emit: Emit, st: TurnState, drop: DropTrack): void {
+  let obj: Json;
+  try { obj = JSON.parse(l); } catch { drop.n++; if (!drop.sample) drop.sample = l.slice(0, 200); return; }
+  (isClaude ? parseClaude : parseCodex)(obj, emit, st);
+}
+// At turn end: if the CLI produced no text and nothing else explains why, say
+// what was dropped so the error card names a cause instead of going out blank.
+// Success paths (text present) and already-explained failures are untouched.
+export function noteDropped(st: TurnState, drop: DropTrack, emit: Emit): void {
+  if (st.text || drop.n === 0 || st.lastError) return;
+  emit({ type: 'error', text: `dropped ${drop.n} non-JSON stdout line(s), first 200 chars: ${drop.sample}` });
+}
 export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, signal }: AgentRun): Promise<AgentResult> {
   return new Promise((resolve) => {
     const st: TurnState = { sessionId, text: '', ok: false, cost: null, lastError: '' };
     const emit: Emit = (e) => { if (e.type === 'error') st.lastError = e.text; onEvent(e); };   // keep the last error for the job's error card
+    const drop: DropTrack = { n: 0, sample: '' };
     const isClaude = kind === 'claude';
     const cmd = isClaude ? 'claude' : codexBin();
     const args = isClaude ? claudeArgs(sessionId) : codexArgs(sessionId, cwd);
@@ -118,10 +134,7 @@ export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, sig
     // the signal lives as long as the whole flow: drop the listener when this turn ends, so finished children aren't killed (or kept) later
     const onAbort = () => killTree(child);
     if (signal) { if (signal.aborted) killTree(child); else signal.addEventListener('abort', onAbort, { once: true }); }
-    lines(child.stdout, (l) => {
-      let obj: Json; try { obj = JSON.parse(l); } catch { return; }
-      (isClaude ? parseClaude : parseCodex)(obj, emit, st);
-    });
+    lines(child.stdout, (l) => feedStdout(l, isClaude, emit, st, drop));
     let err = '';
     lines(child.stderr, (l) => { err += l + '\n'; if (!/^\s*$/.test(l) && !/DeprecationWarning|ExperimentalWarning/.test(l)) emit({ type: 'error', text: short(l, 400) }); });
     child.on('error', (e) => { emit({ type: 'error', text: `${cmd} failed to start: ${e.message}` }); });
@@ -129,6 +142,7 @@ export function runAgent({ kind, cwd, prompt, sessionId, onEvent = () => {}, sig
       signal?.removeEventListener('abort', onAbort);
       if (code !== 0) st.ok = false;
       else if (!isClaude && st.ok === false && !err) st.ok = true;
+      noteDropped(st, drop, emit);
       onEvent({ type: 'done', ok: st.ok, text: st.text, cost: st.cost });
       resolve({ sessionId: st.sessionId, text: st.text, ok: st.ok, code, stderr: err.slice(-2000), lastError: st.lastError });
     });
