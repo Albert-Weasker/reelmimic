@@ -1,5 +1,5 @@
 > [!NOTE]
-> **⭐ Star and fork counts were reset to zero in October 2026** because the repository was accidentally made private for a short time. The project is still actively maintained. Details in [#115](https://github.com/edenfunf/reelmimic/issues/115).
+> **⭐ Star and fork counts were reset to zero on October 20, 2026** because the repository was accidentally made private for a short time. The project is still actively maintained. Details in [#115](https://github.com/edenfunf/reelmimic/issues/115).
 
 <div align="center">
 

@@ -1,5 +1,5 @@
 > [!NOTE]
-> **⭐ 星星與 fork 數已於 2026 年 10 月歸零**，原因是 repo 曾被誤設為私人一小段時間。本專案仍持續維護中，詳見 [#115](https://github.com/edenfunf/reelmimic/issues/115)。
+> **⭐ 星星與 fork 數已於 2026 年 10 月 20 日歸零**，原因是 repo 曾被誤設為私人一小段時間。本專案仍持續維護中，詳見 [#115](https://github.com/edenfunf/reelmimic/issues/115)。
 
 <div align="center">
 

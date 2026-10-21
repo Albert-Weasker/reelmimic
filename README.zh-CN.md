@@ -1,5 +1,5 @@
 > [!NOTE]
-> **⭐ Star 与 Fork 数已于 2026 年 10 月清零**，原因是仓库曾被误设为私有一小段时间。本项目仍在持续维护，详见 [#115](https://github.com/edenfunf/reelmimic/issues/115)。
+> **⭐ Star 与 Fork 数已于 2026 年 10 月 20 日清零**，原因是仓库曾被误设为私有一小段时间。本项目仍在持续维护，详见 [#115](https://github.com/edenfunf/reelmimic/issues/115)。
 
 <div align="center">
 
