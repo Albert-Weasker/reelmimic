@@ -14,6 +14,8 @@
 
 [English](README.md) · **繁體中文** · [简体中文](README.zh-CN.md)
 
+<sub>⭐ 2026 年 10 月 repo 曾被誤設為私人，星星與 fork 數因此歸零，詳見 [#115](https://github.com/edenfunf/reelmimic/issues/115)。</sub>
+
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/assets/demo-sugar.gif" alt="Sugar Rush"></td>

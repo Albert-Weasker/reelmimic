@@ -14,6 +14,8 @@
 
 **English** · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)
 
+<sub>⭐ Star and fork counts were reset in Oct 2026 after the repo was accidentally made private for a short time. Details in [#115](https://github.com/edenfunf/reelmimic/issues/115).</sub>
+
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/assets/demo-sugar.gif" alt="Sugar Rush"></td>

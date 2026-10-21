@@ -14,6 +14,8 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · **简体中文**
 
+<sub>⭐ 2026 年 10 月仓库曾被误设为私有，Star 与 Fork 数因此清零，详见 [#115](https://github.com/edenfunf/reelmimic/issues/115)。</sub>
+
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/assets/demo-sugar.gif" alt="Sugar Rush"></td>
