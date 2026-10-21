@@ -166,10 +166,6 @@ unless you pass `--title`, and a rerun of the same video won't post it twice.
 - Lyrics only come from text you give it. It won't download commercial songs.
 - What you do with the videos is up to you, so make sure you have the rights.
 
-## Star History
-
-[![Star History Chart](docs/assets/star-history.svg)](https://star-history.com/#edenfunf/reelmimic&Date)
-
 ## License
 
 The code is [MIT](LICENSE). Third-party skills and assets bundled here keep their own licenses, listed in
