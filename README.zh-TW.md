@@ -1,3 +1,6 @@
+> [!NOTE]
+> **⭐ 星星與 fork 數已於 2026 年 10 月歸零**，原因是 repo 曾被誤設為私人一小段時間。本專案仍持續維護中，詳見 [#115](https://github.com/edenfunf/reelmimic/issues/115)。
+
 <div align="center">
 
 <img src="docs/assets/logo.svg" width="76" alt="ReelMimic">
@@ -13,8 +16,6 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-5B57F0)
 
 [English](README.md) · **繁體中文** · [简体中文](README.zh-CN.md)
-
-<sub>⭐ 2026 年 10 月 repo 曾被誤設為私人，星星與 fork 數因此歸零，詳見 [#115](https://github.com/edenfunf/reelmimic/issues/115)。</sub>
 
 <table>
   <tr>

@@ -1,3 +1,6 @@
+> [!NOTE]
+> **⭐ Star and fork counts were reset to zero in October 2026** because the repository was accidentally made private for a short time. The project is still actively maintained. Details in [#115](https://github.com/edenfunf/reelmimic/issues/115).
+
 <div align="center">
 
 <img src="docs/assets/logo.svg" width="76" alt="ReelMimic">
@@ -13,8 +16,6 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-5B57F0)
 
 **English** · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)
-
-<sub>⭐ Star and fork counts were reset in Oct 2026 after the repo was accidentally made private for a short time. Details in [#115](https://github.com/edenfunf/reelmimic/issues/115).</sub>
 
 <table>
   <tr>
